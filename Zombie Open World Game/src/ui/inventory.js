@@ -37,10 +37,10 @@ export function createInventoryOverlay() {
   };
 }
 
-export function showInventory(inventoryUI, materials, player) {
+export function showInventory(inventoryUI, materials, player, hooks = {}) {
   inventoryUI.overlay.classList.remove("is-hidden");
   renderMaterials(inventoryUI.materialsGrid, materials);
-  renderRecipes(inventoryUI.recipesGrid, materials, player, inventoryUI);
+  renderRecipes(inventoryUI.recipesGrid, materials, player, inventoryUI, hooks);
 }
 
 export function hideInventory(inventoryUI) {
@@ -65,7 +65,7 @@ function renderMaterials(grid, materials) {
   }
 }
 
-function renderRecipes(grid, materials, player, inventoryUI) {
+function renderRecipes(grid, materials, player, inventoryUI, hooks) {
   grid.innerHTML = "";
   for (const recipe of RECIPES) {
     const canAfford = canAffordRecipe(recipe, materials);
@@ -85,9 +85,9 @@ function renderRecipes(grid, materials, player, inventoryUI) {
 
     if (canAfford) {
       card.querySelector(".recipe-btn").addEventListener("click", () => {
-        craftRecipe(recipe, materials, player);
+        craftRecipe(recipe, materials, player, hooks);
         renderMaterials(inventoryUI.materialsGrid, materials);
-        renderRecipes(inventoryUI.recipesGrid, materials, player, inventoryUI);
+        renderRecipes(inventoryUI.recipesGrid, materials, player, inventoryUI, hooks);
       });
     }
     grid.appendChild(card);
@@ -101,22 +101,22 @@ function canAffordRecipe(recipe, materials) {
   return true;
 }
 
-function craftRecipe(recipe, materials, player) {
+function craftRecipe(recipe, materials, player, hooks) {
   for (const [mat, amt] of Object.entries(recipe.cost)) {
     materials[mat] -= amt;
   }
   if (recipe.heal) {
     player.hp = Math.min(player.hp + recipe.heal, 100 + (player.skills?.health?.value || 0) * 15);
   }
-  // Ammo pack: refills current weapon reserve by 30%
+  // Ammo pack: add a flat chunk of reserve so it always does something useful.
   if (recipe.id === "ammo_pack" && player.weapons && player.weapons[player.activeWeapon]) {
     const w = player.weapons[player.activeWeapon];
-    w.reserve = Math.min(w.reserve + Math.floor(w.reserve * 0.3), (w.magSize || 20) * 12);
+    const cap = hooks.getWeaponReserveCap?.(w) ?? (w.magSize || 20) * 10;
+    const gain = Math.max(Math.floor(cap * 0.35), (w.magSize || 20) * 2);
+    w.reserve = Math.min(w.reserve + gain, cap);
+    if (typeof hooks.syncPlayerAmmoFields === "function") hooks.syncPlayerAmmoFields(player);
   }
-  // Molotov / mine / spike: add to grenade count as proxy for now
-  if (recipe.id === "molotov") {
-    // Could add separate throwable count later
-  }
+  hooks.onCrafted?.(recipe.id);
 }
 
 export function getRecipes() {
