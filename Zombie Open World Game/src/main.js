@@ -400,8 +400,12 @@ const structureGroups = [];
 const cityPropGroups = [];
 const visionBlockers = [];
 
-/** Object pools for performance — avoid constant create/destroy. */
-const bulletPool = [];
+/** Bullet mesh + record pooling — fewer allocations on high fire-rate paths (see GC / object-pool guidance for JS game loops). */
+const bulletMeshPoolsByKey = new Map();
+const bulletRadiusGeometry = new Map();
+const bulletColorMaterial = new Map();
+const bulletRecordPool = [];
+
 const particlePool = [];
 const zombiePool = [];
 const barricades = [];
@@ -2332,9 +2336,7 @@ function resetWorldForNewMap() {
   }
   zombies.length = 0;
   for (const b of bullets) {
-    scene.remove(b.mesh);
-    b.mesh.geometry?.dispose();
-    b.mesh.material?.dispose();
+    releaseBulletRecord(b);
   }
   bullets.length = 0;
   for (const p of pickups) {
@@ -2766,6 +2768,60 @@ function updateVehicles(dt) {
   }
 }
 
+function bulletPoolKey(radius, colorHex) {
+  return `${radius}:${colorHex}`;
+}
+
+function getSharedBulletGeometry(radius) {
+  let g = bulletRadiusGeometry.get(radius);
+  if (!g) {
+    g = new THREE.SphereGeometry(radius, 8, 8);
+    bulletRadiusGeometry.set(radius, g);
+  }
+  return g;
+}
+
+function getSharedBulletMaterial(colorHex) {
+  let m = bulletColorMaterial.get(colorHex);
+  if (!m) {
+    m = new THREE.MeshBasicMaterial({ color: colorHex });
+    bulletColorMaterial.set(colorHex, m);
+  }
+  return m;
+}
+
+function acquireBulletMesh(radius, colorHex) {
+  const key = bulletPoolKey(radius, colorHex);
+  let pool = bulletMeshPoolsByKey.get(key);
+  if (!pool) {
+    pool = [];
+    bulletMeshPoolsByKey.set(key, pool);
+  }
+  const mesh = pool.pop() ?? new THREE.Mesh(getSharedBulletGeometry(radius), getSharedBulletMaterial(colorHex));
+  mesh.visible = true;
+  return mesh;
+}
+
+function releaseBulletMesh(mesh) {
+  scene.remove(mesh);
+  mesh.visible = false;
+  const r = mesh.geometry.parameters.radius;
+  const c = mesh.material.color.getHex();
+  const key = bulletPoolKey(r, c);
+  let pool = bulletMeshPoolsByKey.get(key);
+  if (!pool) {
+    pool = [];
+    bulletMeshPoolsByKey.set(key, pool);
+  }
+  pool.push(mesh);
+}
+
+function releaseBulletRecord(bullet) {
+  releaseBulletMesh(bullet.mesh);
+  bullet.mesh = null;
+  bulletRecordPool.push(bullet);
+}
+
 function spawnBullet(origin, direction, damage, options = {}) {
   const {
     speed = 75,
@@ -2775,19 +2831,18 @@ function spawnBullet(origin, direction, damage, options = {}) {
     owner = "player",
   } = options;
 
-  const bullet = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 8, 8),
-    new THREE.MeshBasicMaterial({ color }),
-  );
-  bullet.position.copy(origin);
-  scene.add(bullet);
-  bullets.push({
-    mesh: bullet,
-    velocity: direction.clone().normalize().multiplyScalar(speed),
-    life,
-    damage,
-    owner,
-  });
+  const mesh = acquireBulletMesh(radius, color);
+  mesh.position.copy(origin);
+  scene.add(mesh);
+  const rec =
+    bulletRecordPool.pop() ??
+    { mesh: null, velocity: new THREE.Vector3(), life: 0, damage: 0, owner: "player" };
+  rec.mesh = mesh;
+  rec.velocity.copy(direction).normalize().multiplyScalar(speed);
+  rec.life = life;
+  rec.damage = damage;
+  rec.owner = owner;
+  bullets.push(rec);
 }
 
 const _losDirection = new THREE.Vector3();
@@ -2796,6 +2851,22 @@ const _tempVec1 = new THREE.Vector3();
 const _tempVec2 = new THREE.Vector3();
 const _tempVec3 = new THREE.Vector3();
 const _tempVec4 = new THREE.Vector3();
+const _bulletOrigin = new THREE.Vector3();
+const _bulletDirection = new THREE.Vector3();
+const _bulletPelletDir = new THREE.Vector3();
+const _bulletPrev = new THREE.Vector3();
+const _losHeadVec = new THREE.Vector3();
+const _muzzleWorld = new THREE.Vector3();
+const _aimPointVec = new THREE.Vector3();
+const _teammateShotDir = new THREE.Vector3();
+const _pelletDirScratch = new THREE.Vector3();
+const _segAb = new THREE.Vector3();
+const _segAc = new THREE.Vector3();
+const _segClosest = new THREE.Vector3();
+const _hitZoneCenters = Array.from({ length: 6 }, () => new THREE.Vector3());
+const _worldAxisY = new THREE.Vector3(0, 1, 0);
+const _teammateFollowTarget = new THREE.Vector3();
+const _teammateTargetPosition = new THREE.Vector3();
 
 function hasLineOfSight(origin, targetPosition) {
   _losDirection.subVectors(targetPosition, origin);
@@ -2814,8 +2885,8 @@ const _toTargetVec = new THREE.Vector3();
 const _flatToTargetVec = new THREE.Vector3();
 const _facingVec = new THREE.Vector3();
 function canTeammateSeeZombie(mate, zombie) {
-  _eyeVec.copy(mate.mesh.position).add(new THREE.Vector3(0, 1.58, 0));
-  _chestVec.copy(zombie.mesh.position).add(new THREE.Vector3(0, 1.45, 0));
+  _eyeVec.copy(mate.mesh.position).add(_tempVec1.set(0, 1.58, 0));
+  _chestVec.copy(zombie.mesh.position).add(_tempVec2.set(0, 1.45, 0));
   _toTargetVec.subVectors(_chestVec, _eyeVec);
   const distanceSq = _toTargetVec.lengthSq();
   if (distanceSq > mate.visionRange * mate.visionRange) return false;
@@ -2828,7 +2899,8 @@ function canTeammateSeeZombie(mate, zombie) {
   _facingVec.set(Math.sin(mate.mesh.rotation.y), 0, Math.cos(mate.mesh.rotation.y)).normalize();
   if (_facingVec.dot(_flatToTargetVec) < mate.visionFovCos) return false;
 
-  return hasLineOfSight(_eyeVec, _chestVec) || hasLineOfSight(_eyeVec, zombie.mesh.position.clone().add(new THREE.Vector3(0, 2.05, 0)));
+  _losHeadVec.set(zombie.mesh.position.x, zombie.mesh.position.y + 2.05, zombie.mesh.position.z);
+  return hasLineOfSight(_eyeVec, _chestVec) || hasLineOfSight(_eyeVec, _losHeadVec);
 }
 
 function computeCurrentBulletSpread(weapon) {
@@ -2885,20 +2957,23 @@ function shoot() {
   // Shell ejection effect
   ejectShell(weapon.name);
 
-  const direction = new THREE.Vector3(
+  _bulletDirection.set(
     -Math.sin(player.yaw) * Math.cos(player.pitch),
     Math.sin(player.pitch),
     -Math.cos(player.yaw) * Math.cos(player.pitch),
   ).normalize();
 
-  const origin = player.position.clone();
-  origin.y -= 0.2;
-  const moveSpreadBonus = THREE.MathUtils.clamp(player.moveVelocity.length() / settings.sprintSpeed, 0, 1) * 0.045;
+  _bulletOrigin.copy(player.position);
+  _bulletOrigin.y -= 0.2;
   if (weapon.pellets) {
-    const spread = computeCurrentBulletSpread(weapon) + moveSpreadBonus;
+    const spread = computeCurrentBulletSpread(weapon);
     for (let p = 0; p < weapon.pellets; p++) {
-      const pelletDir = applyDirectionalSpread(direction, spread);
-      spawnBullet(origin.clone(), pelletDir, weapon.damage, {
+      _bulletPelletDir.copy(_bulletDirection);
+      _bulletPelletDir.x += (Math.random() - 0.5) * spread * 2;
+      _bulletPelletDir.y += (Math.random() - 0.5) * spread;
+      _bulletPelletDir.z += (Math.random() - 0.5) * spread * 2;
+      _bulletPelletDir.normalize();
+      spawnBullet(_bulletOrigin, _bulletPelletDir, weapon.damage, {
         speed: 58,
         life: weapon.range / 58 + 0.08,
         color: 0xffaa44,
@@ -2907,8 +2982,14 @@ function shoot() {
       });
     }
   } else {
-    const shotDirection = applyDirectionalSpread(direction, computeCurrentBulletSpread(weapon));
-    spawnBullet(origin, shotDirection, weapon.damage, {
+    const spread = computeCurrentBulletSpread(weapon);
+    if (spread > 0) {
+      _bulletDirection.x += (Math.random() - 0.5) * spread * 2;
+      _bulletDirection.y += (Math.random() - 0.5) * spread;
+      _bulletDirection.z += (Math.random() - 0.5) * spread * 2;
+      _bulletDirection.normalize();
+    }
+    spawnBullet(_bulletOrigin, _bulletDirection, weapon.damage, {
       speed: 75,
       life: weapon.range / 75 + 0.18,
       color: 0xffd08a,
@@ -3085,32 +3166,26 @@ function updateBullets(dt) {
   for (let i = bullets.length - 1; i >= 0; i -= 1) {
     const bullet = bullets[i];
     bullet.life -= dt;
-    const prev = bullet.mesh.position.clone();
+    _bulletPrev.copy(bullet.mesh.position);
     bullet.mesh.position.addScaledVector(bullet.velocity, dt);
     if (bullet.life <= 0) {
-      scene.remove(bullet.mesh);
-      bullet.mesh.geometry?.dispose();
-      bullet.mesh.material?.dispose();
+      releaseBulletRecord(bullet);
       bullets.splice(i, 1);
       continue;
     }
 
-    if (bullet.owner === "player" && checkBarrelHits(prev, bullet.mesh.position)) {
-      scene.remove(bullet.mesh);
-      bullet.mesh.geometry?.dispose();
-      bullet.mesh.material?.dispose();
+    if (bullet.owner === "player" && checkBarrelHits(_bulletPrev, bullet.mesh.position)) {
+      releaseBulletRecord(bullet);
       bullets.splice(i, 1);
       continue;
     }
     for (let zi = zombies.length - 1; zi >= 0; zi -= 1) {
       const zombie = zombies[zi];
-      const hit = getZombieHit(prev, bullet.mesh.position, zombie);
+      const hit = getZombieHit(_bulletPrev, bullet.mesh.position, zombie);
       if (hit) {
         const hs = hit.part === "head";
         applyZombieDamage(zi, bullet.damage * hit.multiplier, hs);
-        scene.remove(bullet.mesh);
-        bullet.mesh.geometry?.dispose();
-        bullet.mesh.material?.dispose();
+        releaseBulletRecord(bullet);
         bullets.splice(i, 1);
         if (bullet.owner === "player") {
           hitMarkerTimer = 0.15;
@@ -3202,29 +3277,54 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
 }
 
 function segmentSphereHit(a, b, center, radius) {
-  const ab = new THREE.Vector3().subVectors(b, a);
-  const ac = new THREE.Vector3().subVectors(center, a);
-  const abLenSq = Math.max(0.0001, ab.lengthSq());
-  const t = THREE.MathUtils.clamp(ac.dot(ab) / abLenSq, 0, 1);
-  const closest = new THREE.Vector3().copy(a).addScaledVector(ab, t);
-  return closest.distanceToSquared(center) <= radius * radius;
+  _segAb.subVectors(b, a);
+  _segAc.subVectors(center, a);
+  const abLenSq = Math.max(0.0001, _segAb.lengthSq());
+  const t = THREE.MathUtils.clamp(_segAc.dot(_segAb) / abLenSq, 0, 1);
+  _segClosest.copy(a).addScaledVector(_segAb, t);
+  return _segClosest.distanceToSquared(center) <= radius * radius;
 }
 
 function getZombieHit(from, to, zombie) {
   const base = zombie.mesh.position;
-  const zones = [
-    { part: "head", multiplier: 2.1, center: new THREE.Vector3(base.x, base.y + 2.08, base.z + 0.02), radius: 0.27 },
-    { part: "torso", multiplier: 1.0, center: new THREE.Vector3(base.x, base.y + 1.46, base.z), radius: 0.56 },
-    { part: "limb", multiplier: 0.7, center: new THREE.Vector3(base.x - 0.55, base.y + 1.35, base.z), radius: 0.26 },
-    { part: "limb", multiplier: 0.7, center: new THREE.Vector3(base.x + 0.55, base.y + 1.35, base.z), radius: 0.26 },
-    { part: "limb", multiplier: 0.7, center: new THREE.Vector3(base.x - 0.22, base.y + 0.45, base.z), radius: 0.25 },
-    { part: "limb", multiplier: 0.7, center: new THREE.Vector3(base.x + 0.22, base.y + 0.45, base.z), radius: 0.25 },
-  ];
+  const bx = base.x;
+  const by = base.y;
+  const bz = base.z;
+  _hitZoneCenters[0].set(bx, by + 2.08, bz + 0.02);
+  _hitZoneCenters[1].set(bx, by + 1.46, bz);
+  _hitZoneCenters[2].set(bx - 0.55, by + 1.35, bz);
+  _hitZoneCenters[3].set(bx + 0.55, by + 1.35, bz);
+  _hitZoneCenters[4].set(bx - 0.22, by + 0.45, bz);
+  _hitZoneCenters[5].set(bx + 0.22, by + 0.45, bz);
+  let r0 = 0.27;
+  let r1 = 0.56;
+  let r2 = 0.26;
+  let r3 = 0.26;
+  let r4 = 0.25;
+  let r5 = 0.25;
   if (zombie.type === "brute") {
-    for (const zone of zones) zone.radius *= 1.22;
+    r0 *= 1.22;
+    r1 *= 1.22;
+    r2 *= 1.22;
+    r3 *= 1.22;
+    r4 *= 1.22;
+    r5 *= 1.22;
   } else if (zombie.type === "runner") {
-    for (const zone of zones) zone.radius *= 0.9;
+    r0 *= 0.9;
+    r1 *= 0.9;
+    r2 *= 0.9;
+    r3 *= 0.9;
+    r4 *= 0.9;
+    r5 *= 0.9;
   }
+  const zones = [
+    { part: "head", multiplier: 2.1, center: _hitZoneCenters[0], radius: r0 },
+    { part: "torso", multiplier: 1.0, center: _hitZoneCenters[1], radius: r1 },
+    { part: "limb", multiplier: 0.7, center: _hitZoneCenters[2], radius: r2 },
+    { part: "limb", multiplier: 0.7, center: _hitZoneCenters[3], radius: r3 },
+    { part: "limb", multiplier: 0.7, center: _hitZoneCenters[4], radius: r4 },
+    { part: "limb", multiplier: 0.7, center: _hitZoneCenters[5], radius: r5 },
+  ];
 
   for (const zone of zones) {
     if (segmentSphereHit(from, to, zone.center, zone.radius)) return zone;
@@ -3283,9 +3383,9 @@ function updateTeammates(dt) {
     if (mate.shotgun) mate.shotgun.muzzleFlash.material.opacity *= Math.exp(-dt * 28);
     mate.pistol.muzzleFlash.material.opacity *= Math.exp(-dt * 28);
 
-    const followTarget = player.position.clone().add(
-      mate.followOffset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw),
-    );
+    const followTarget = _teammateFollowTarget
+      .copy(player.position)
+      .add(_tempVec3.copy(mate.followOffset).applyAxisAngle(_worldAxisY, player.yaw));
 
     let visibleTarget = null;
     let visibleDistanceSq = Infinity;
@@ -3313,7 +3413,7 @@ function updateTeammates(dt) {
     let moveGoal = followTarget;
     let combatDistanceSq = Infinity;
     if (mate.currentTarget) {
-      const targetPosition = mate.currentTarget.mesh.position.clone();
+      const targetPosition = _teammateTargetPosition.copy(mate.currentTarget.mesh.position);
       const d2 = mate.mesh.position.distanceToSquared(targetPosition);
       combatDistanceSq = d2;
       const dist = Math.sqrt(d2);
@@ -3381,15 +3481,14 @@ function updateTeammates(dt) {
       weapon.ammo > 0 &&
       visibleTarget === mate.currentTarget
     ) {
-      const muzzleWorld = new THREE.Vector3();
       mate.mesh.updateMatrixWorld(true);
-      activeGun.muzzle.getWorldPosition(muzzleWorld);
-      const aimPoint = mate.currentTarget.mesh.position.clone().add(new THREE.Vector3(0, 1.45, 0));
-      const shotDirection = aimPoint.sub(muzzleWorld).normalize();
-      shotDirection.x += (Math.random() - 0.5) * 0.03;
-      shotDirection.y += (Math.random() - 0.5) * 0.02;
-      shotDirection.z += (Math.random() - 0.5) * 0.03;
-      shotDirection.normalize();
+      activeGun.muzzle.getWorldPosition(_muzzleWorld);
+      _aimPointVec.copy(mate.currentTarget.mesh.position).add(_tempVec1.set(0, 1.45, 0));
+      _teammateShotDir.copy(_aimPointVec).sub(_muzzleWorld).normalize();
+      _teammateShotDir.x += (Math.random() - 0.5) * 0.03;
+      _teammateShotDir.y += (Math.random() - 0.5) * 0.02;
+      _teammateShotDir.z += (Math.random() - 0.5) * 0.03;
+      _teammateShotDir.normalize();
 
       weapon.ammo -= 1;
       mate.shootCooldown = weapon.fireDelay;
@@ -3398,12 +3497,12 @@ function updateTeammates(dt) {
       playSfx("teammate_shot", 0.75);
       if (usingShotgun && weapon.pellets) {
         for (let p = 0; p < weapon.pellets; p += 1) {
-          const pd = shotDirection.clone();
-          pd.x += (Math.random() - 0.5) * 0.08;
-          pd.y += (Math.random() - 0.5) * 0.06;
-          pd.z += (Math.random() - 0.5) * 0.08;
-          pd.normalize();
-          spawnBullet(muzzleWorld, pd, weapon.damage, {
+          _pelletDirScratch.copy(_teammateShotDir);
+          _pelletDirScratch.x += (Math.random() - 0.5) * 0.08;
+          _pelletDirScratch.y += (Math.random() - 0.5) * 0.06;
+          _pelletDirScratch.z += (Math.random() - 0.5) * 0.08;
+          _pelletDirScratch.normalize();
+          spawnBullet(_muzzleWorld, _pelletDirScratch, weapon.damage, {
             speed: weapon.bulletSpeed,
             life: weapon.range / weapon.bulletSpeed + 0.12,
             color: 0x6bc7ff,
@@ -3412,7 +3511,7 @@ function updateTeammates(dt) {
           });
         }
       } else {
-        spawnBullet(muzzleWorld, shotDirection, weapon.damage, {
+        spawnBullet(_muzzleWorld, _teammateShotDir, weapon.damage, {
           speed: weapon.bulletSpeed,
           life: weapon.range / weapon.bulletSpeed + 0.12,
           color: 0x6bc7ff,
