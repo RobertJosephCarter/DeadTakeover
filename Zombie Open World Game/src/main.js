@@ -570,6 +570,7 @@ let score = 0;
 let killStreak = 0;
 let killStreakTimer = 0;
 let screenShake = 0;
+let screenShakeTime = Math.random() * 1000;
 let isCrouching = false;
 let isADS = false;
 let grenadeCount = 3;
@@ -604,6 +605,10 @@ let skillPoints = 0;
 let skillXp = 0;
 let meleeCooldown = 0;
 let noiseMakerCount = 2;
+let hitMarkerPulse = 0;
+let hitMarkerHeadshotTimer = 0;
+let hitStopTimer = 0;
+let hitStopCooldown = 0;
 const playerProgression = loadProgression();
 
 /** Scavenging / Crafting materials */
@@ -687,6 +692,24 @@ function clearInputState() {
 
 function updateAudioButtonLabel() {
   audioBtnEl.textContent = `Audio: ${audioSystem.muted ? "Off" : "On"}`;
+}
+
+// Combat feedback based on "juice" best practices: use smooth trauma-based shake
+// and short, throttled freeze frames for heavy impacts instead of random jitter.
+function addScreenShake(amount) {
+  screenShake = Math.min(1, screenShake + amount);
+}
+
+function triggerHitStop(duration) {
+  if (duration <= 0 || gameState !== "PLAYING" || gameOver || hitStopCooldown > 0) return;
+  hitStopTimer = Math.max(hitStopTimer, duration);
+  hitStopCooldown = Math.max(hitStopCooldown, Math.max(0.08, duration * 2.5));
+}
+
+function triggerHitMarker(isHeadshot = false) {
+  hitMarkerTimer = isHeadshot ? 0.18 : 0.12;
+  hitMarkerPulse = 1;
+  if (isHeadshot) hitMarkerHeadshotTimer = 0.22;
 }
 
 function toggleAudioMuted() {
@@ -2376,6 +2399,11 @@ function resetWorldForNewMap() {
   killStreak = 0;
   killStreakTimer = 0;
   screenShake = 0;
+  screenShakeTime = Math.random() * 1000;
+  hitMarkerPulse = 0;
+  hitMarkerHeadshotTimer = 0;
+  hitStopTimer = 0;
+  hitStopCooldown = 0;
   isCrouching = false;
   isADS = false;
   crosshairSpread = 0;
@@ -3188,7 +3216,11 @@ function updateBullets(dt) {
         releaseBulletRecord(bullet);
         bullets.splice(i, 1);
         if (bullet.owner === "player") {
-          hitMarkerTimer = 0.15;
+          triggerHitMarker(hs);
+          if (hs) {
+            addScreenShake(0.08);
+            triggerHitStop(0.045);
+          }
           if (hs) score += 10;
           messageEl.textContent =
             hs ? `Headshot! +${isADS ? 160 : 150}pts` : hit.part === "torso" ? "Body hit." : "Limb hit.";
@@ -3207,11 +3239,22 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
   zombie.hp -= finalDamage;
   playSfx("zombie_hit", Math.min(1.3, finalDamage / 22));
   spawnBloodParticles(zombie.mesh.position, isHeadshot ? 10 : 5);
+  if (isMelee) {
+    addScreenShake(isHeadshot ? 0.18 : 0.12);
+    triggerHitStop(isHeadshot ? 0.06 : 0.045);
+  }
   if (zombie.hp <= 0) {
     const pos = zombie.mesh.position.clone();
     const wasBoss = zombie.isBoss;
     const zombieType = zombie.type;
     const isSpecial = ["spitter", "hunter", "charger", "juggernaut", "boomer", "screamer"].includes(zombieType);
+    if (wasBoss) {
+      addScreenShake(0.32);
+      triggerHitStop(0.085);
+    } else if (zombieType === "juggernaut") {
+      addScreenShake(0.22);
+      triggerHitStop(0.07);
+    }
 
     // Create corpse for revival mechanic (unless headshot)
     if (!isHeadshot && !wasBoss && zombieType !== "boomer") {
@@ -3669,7 +3712,8 @@ function updateZombies(dt) {
         if (targetIsPlayer && distance < 1.8 && zombie.leapTime > 0) {
           player.hp = Math.max(0, player.hp - 18);
           player.damageFlash = 0.9;
-          screenShake = 0.4;
+          addScreenShake(0.4);
+          triggerHitStop(0.05);
           messageEl.textContent = "HUNTER POUNCED!";
           zombie.hunterLeaping = false;
           if (player.hp <= 0 && !gameOver) {
@@ -3697,7 +3741,8 @@ function updateZombies(dt) {
         if (targetIsPlayer && distance < 2) {
           player.hp -= zombie.damage * 2;
           player.damageFlash = 0.9;
-          screenShake = 0.6;
+          addScreenShake(0.6);
+          triggerHitStop(0.075);
           // Knockback
           const knockDir = zombie.chargeDirection.clone();
           player.position.addScaledVector(knockDir, 6);
@@ -3822,6 +3867,12 @@ function updateZombies(dt) {
       if (targetIsPlayer) {
         player.hp -= zombie.damage;
         player.damageFlash = 0.9;
+        addScreenShake(
+          zombie.type === "juggernaut" ? 0.28 : zombie.type === "brute" ? 0.18 : zombie.type === "charger" ? 0.16 : 0.08,
+        );
+        if (zombie.type === "juggernaut" || zombie.type === "brute" || zombie.type === "charger") {
+          triggerHitStop(0.04);
+        }
         messageEl.textContent = zombie.type === "brute" ? "Brute smash!" : zombie.type === "spitter" ? "Spitter clawed you!" : zombie.type === "hunter" ? "Hunter slashed!" : zombie.type === "charger" ? "Charger punched!" : zombie.type === "crawler" ? "Crawler bit you!" : zombie.type === "juggernaut" ? "Juggernaut crushed you!" : zombie.type === "boomer" ? "Boomer clawed you!" : zombie.type === "screamer" ? "Screamer scratched you!" : "A zombie hit you!";
         if (player.hp <= 0) {
           player.hp = 0;
@@ -4380,7 +4431,18 @@ function updateHud(dt) {
     crosshairEl.style.opacity = scopeLikeWeapon ? "0.08" : (isADS ? "0.35" : "1");
   }
   hitMarkerTimer = Math.max(0, hitMarkerTimer - dt);
+  hitMarkerPulse = Math.max(0, hitMarkerPulse - dt * 8.5);
+  hitMarkerHeadshotTimer = Math.max(0, hitMarkerHeadshotTimer - dt);
   hitMarkerEl.style.opacity = `${hitMarkerTimer > 0 ? 1 : 0}`;
+  hitMarkerEl.style.transform = `translate(-50%, -50%) scale(${1 + hitMarkerPulse * 0.45})`;
+  hitMarkerEl.style.setProperty(
+    "--hit-marker-color",
+    hitMarkerHeadshotTimer > 0 ? "rgba(255, 116, 116, 0.98)" : "rgba(255, 235, 186, 0.95)",
+  );
+  hitMarkerEl.style.filter =
+    hitMarkerHeadshotTimer > 0
+      ? "drop-shadow(0 0 16px rgba(255, 90, 90, 0.58))"
+      : "drop-shadow(0 0 10px rgba(255, 235, 186, 0.28))";
   alertTimer = Math.max(0, alertTimer - dt);
   topCenterAlertEl.style.opacity = `${alertTimer > 0 ? 1 : 0}`;
   killStreakTimer = Math.max(0, killStreakTimer - dt);
@@ -4508,7 +4570,7 @@ function updateParticles(dt) {
 
 // ─── Explosions ───────────────────────────────────────────────────────────────
 function createExplosion(position, radius, damage) {
-  screenShake = 0.6;
+  addScreenShake(Math.min(0.75, 0.24 + radius * 0.06));
   playSfx("explosion", 1);
   spawnFireParticles(position, 18);
   spawnSparks(position, 12);
@@ -4561,6 +4623,7 @@ function createExplosion(position, radius, damage) {
       const falloff = 1 - pDist / radius;
       player.hp = Math.max(0, player.hp - damage * falloff * 0.4);
       player.damageFlash = 0.9;
+      triggerHitStop(0.08);
       if (player.hp <= 0) {
         player.hp = 0;
         gameOver = true;
@@ -5282,7 +5345,7 @@ function performMelee() {
 
   if (hitCount > 0) {
     messageEl.textContent = `Melee hit ${hitCount} zombie${hitCount > 1 ? 's' : ''}!`;
-    screenShake = 0.15;
+    addScreenShake(0.15);
   }
 }
 
@@ -5295,10 +5358,14 @@ setInterval(() => {
 
 function animate(nowMs) {
   const now = nowMs * 0.001;
-  const dt = Math.min(0.05, now - (animate.lastTime || now));
+  const frameDt = Math.min(0.05, now - (animate.lastTime || now));
   animate.lastTime = now;
+  const freezeFrame = hitStopTimer > 0;
+  if (hitStopCooldown > 0) hitStopCooldown = Math.max(0, hitStopCooldown - frameDt);
+  if (hitStopTimer > 0) hitStopTimer = Math.max(0, hitStopTimer - frameDt);
+  const dt = freezeFrame ? 0 : frameDt;
 
-  if (gameState === "PLAYING" && !gameOver && !upgradeBenchOpen && !inventoryOpen) {
+  if (dt > 0 && gameState === "PLAYING" && !gameOver && !upgradeBenchOpen && !inventoryOpen) {
 
     gameTime += dt;
     spawnTimer -= dt;
@@ -5402,16 +5469,18 @@ function animate(nowMs) {
   const adsFov = isADS ? 48 : 75;
   camera.fov += (adsFov - camera.fov) * Math.min(1, dt * 13);
   camera.updateProjectionMatrix();
-  if (screenShake > 0) {
-    screenShake = Math.max(0, screenShake - dt * 4.5);
-    const sh = screenShake * 0.2;
-    camera.position.x += (Math.random() - 0.5) * sh;
-    camera.position.y += (Math.random() - 0.5) * sh * 0.7;
-    camera.position.z += (Math.random() - 0.5) * sh;
+  if (screenShake > 0 && dt > 0) {
+    screenShake = Math.max(0, screenShake - dt * 1.9);
+    screenShakeTime += dt * (18 + screenShake * 18);
+    const shakePower = screenShake * screenShake;
+    const sh = shakePower * 0.34;
+    camera.position.x += Math.sin(screenShakeTime * 21.7 + 0.6) * sh;
+    camera.position.y += Math.sin(screenShakeTime * 17.3 + 1.9) * sh * 0.65;
+    camera.position.z += Math.cos(screenShakeTime * 19.8 + 2.7) * sh * 0.85;
   }
   updateWeapon(dt);
   updateHUDMaterials();
-  updateHud(dt);
+  updateHud(frameDt);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
