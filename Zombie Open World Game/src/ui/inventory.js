@@ -113,9 +113,18 @@ function craftRecipe(recipe, materials, player) {
     const w = player.weapons[player.activeWeapon];
     w.reserve = Math.min(w.reserve + Math.floor(w.reserve * 0.3), (w.magSize || 20) * 12);
   }
-  // Molotov / mine / spike: add to grenade count as proxy for now
+  // Molotov / mine / spike: add to player inventory as placeable items
   if (recipe.id === "molotov") {
-    // Could add separate throwable count later
+    if (!player.inventory) player.inventory = {};
+    player.inventory.molotov = (player.inventory.molotov || 0) + 1;
+  }
+  if (recipe.id === "land_mine") {
+    if (!player.inventory) player.inventory = {};
+    player.inventory.landMine = (player.inventory.landMine || 0) + 1;
+  }
+  if (recipe.id === "spike_trap") {
+    if (!player.inventory) player.inventory = {};
+    player.inventory.spikeTrap = (player.inventory.spikeTrap || 0) + 1;
   }
 }
 

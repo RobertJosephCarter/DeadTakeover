@@ -72,6 +72,11 @@ const killStreakEl = document.querySelector("#kill-streak-display");
 const nightIndicatorEl = document.querySelector("#night-indicator");
 const buildHintEl = document.querySelector("#build-hint");
 
+/** Weapon slots HUD element — created dynamically since markup is missing. */
+const weaponSlotsEl = document.createElement("div");
+weaponSlotsEl.id = "weapon-slots";
+document.body.appendChild(weaponSlotsEl);
+
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x6a7862, 60, 260);
 
@@ -561,6 +566,9 @@ let hordeNightActive = false;
 let hordeNightTimer = 0;
 let bossAlive = false;
 const grenades = [];
+const molotovs = [];
+const landMines = [];
+const spikeTraps = [];
 const particles = [];
 const barrels = [];
 const acidPuddles = [];
@@ -2379,6 +2387,12 @@ function resetWorldForNewMap() {
     g.mesh.material?.dispose();
   }
   grenades.length = 0;
+  for (const m of molotovs) { scene.remove(m.mesh); disposeOwnedObject3D(m.mesh); }
+  molotovs.length = 0;
+  for (const m of landMines) { scene.remove(m.mesh); disposeOwnedObject3D(m.mesh); }
+  landMines.length = 0;
+  for (const t of spikeTraps) { scene.remove(t.mesh); disposeOwnedObject3D(t.mesh); }
+  spikeTraps.length = 0;
   for (const p of particles) {
     scene.remove(p.mesh);
     p.mesh.geometry?.dispose();
@@ -3394,7 +3408,7 @@ function updateTeammates(dt) {
 }
 
 function updateZombies(dt) {
-  // Update acid puddles
+  // Update acid / fire puddles
   for (let ai = acidPuddles.length - 1; ai >= 0; ai--) {
     const puddle = acidPuddles[ai];
     puddle.life -= dt;
@@ -3405,8 +3419,8 @@ function updateZombies(dt) {
       acidPuddles.splice(ai, 1);
       continue;
     }
-    // Damage players/teammates in puddle
-    if (gameState === "PLAYING" && !gameOver) {
+    // Damage players/teammates in acid puddles (fire puddles don't hurt player)
+    if (gameState === "PLAYING" && !gameOver && !puddle.isFire) {
       const dToPlayer = puddle.mesh.position.distanceTo(player.position);
       if (dToPlayer < puddle.radius) {
         player.hp = Math.max(0, player.hp - puddle.damagePerSecond * dt);
@@ -3417,6 +3431,17 @@ function updateZombies(dt) {
           messageEl.textContent = "Dissolved by acid...";
           if (document.pointerLockElement === canvas) document.exitPointerLock();
           setMenuMode("death");
+        }
+      }
+    }
+    // Fire puddles damage zombies
+    if (puddle.isFire) {
+      for (const z of zombies) {
+        if (z.mesh.position.distanceTo(puddle.mesh.position) < puddle.radius) {
+          z.hp -= puddle.damagePerSecond * dt;
+          if (z.hp <= 0) {
+            applyZombieDamage(zombies.indexOf(z), 0);
+          }
         }
       }
     }
@@ -4221,6 +4246,22 @@ function updateHud(dt) {
     killStreakEl.textContent = killStreak >= 3 ? `🔥 ×${killStreak} streak!` : "";
     killStreakEl.style.opacity = killStreak >= 3 ? "1" : "0";
   }
+  renderWeaponSlotsHUD();
+}
+
+// ─── Weapon Slots HUD ─────────────────────────────────────────────────────
+function renderWeaponSlotsHUD() {
+  if (!weaponSlotsEl) return;
+  weaponSlotsEl.innerHTML = "";
+  const slotMap = { 0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "6", 6: "7" };
+  for (let i = 0; i < player.weapons.length; i++) {
+    const w = player.weapons[i];
+    const isActive = i === player.activeWeapon;
+    const div = document.createElement("div");
+    div.className = "weapon-slot" + (isActive ? " is-active" : "");
+    div.innerHTML = `<span class="weapon-slot-key">${slotMap[i] || i + 1}</span><span class="weapon-slot-name">${w.name}</span><span class="weapon-slot-ammo">${w.ammo}/${w.reserve}</span>`;
+    weaponSlotsEl.appendChild(div);
+  }
 }
 
 // ─── Blood Particles ─────────────────────────────────────────────────────────
@@ -4419,6 +4460,158 @@ function updateGrenades(dt) {
       disposeOwnedObject3D(g.mesh);
       grenades.splice(i, 1);
       createExplosion(pos, 8.5, 95);
+    }
+  }
+}
+
+// ─── Molotov Cocktails ───────────────────────────────────────────────────────
+function throwMolotov() {
+  if (!pointerLocked || gameOver || !(player.inventory?.molotov > 0)) return;
+  player.inventory.molotov -= 1;
+  playSfx("grenade_throw", 0.9);
+  messageEl.textContent = `Molotov thrown! (${player.inventory.molotov} left)`;
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.06, 0.08, 0.24, 8),
+    new THREE.MeshStandardMaterial({ color: 0x3a2a18, roughness: 0.75 }),
+  );
+  const wick = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.008, 0.008, 0.08, 4),
+    new THREE.MeshBasicMaterial({ color: 0xff4400 }),
+  );
+  wick.position.y = 0.14;
+  mesh.add(wick);
+  const origin = player.position.clone();
+  origin.y -= 0.15;
+  const direction = new THREE.Vector3(
+    -Math.sin(player.yaw) * Math.cos(player.pitch),
+    Math.sin(player.pitch) + 0.28,
+    -Math.cos(player.yaw) * Math.cos(player.pitch),
+  ).normalize();
+  mesh.position.copy(origin);
+  scene.add(mesh);
+  molotovs.push({ mesh, velocity: direction.clone().multiplyScalar(14), fuse: 1.6 });
+}
+
+function updateMolotovs(dt) {
+  for (let i = molotovs.length - 1; i >= 0; i--) {
+    const m = molotovs[i];
+    m.fuse -= dt;
+    m.velocity.y += settings.gravity * 0.48 * dt;
+    m.mesh.position.addScaledVector(m.velocity, dt);
+    m.mesh.rotation.z += dt * 12;
+    const floor = terrainHeight(m.mesh.position.x, m.mesh.position.z) + 0.05;
+    if (m.mesh.position.y < floor) {
+      m.mesh.position.y = floor;
+      m.velocity.set(0, 0, 0);
+    }
+    if (m.fuse <= 0) {
+      const pos = m.mesh.position.clone();
+      scene.remove(m.mesh);
+      disposeOwnedObject3D(m.mesh);
+      molotovs.splice(i, 1);
+      // Fire pool instead of explosion
+      const fireGeo = new THREE.CircleGeometry(4.5, 20);
+      const fireMat = new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.6 });
+      const fireMesh = new THREE.Mesh(fireGeo, fireMat);
+      fireMesh.rotation.x = -Math.PI / 2;
+      fireMesh.position.set(pos.x, terrainHeight(pos.x, pos.z) + 0.06, pos.z);
+      scene.add(fireMesh);
+      acidPuddles.push({ mesh: fireMesh, life: 6, maxLife: 6, radius: 4.5, damagePerSecond: 22, isFire: true });
+      playSfx("explosion", 0.6);
+    }
+  }
+}
+
+// ─── Land Mines ──────────────────────────────────────────────────────────────
+function placeLandMine() {
+  if (!pointerLocked || gameOver || !(player.inventory?.landMine > 0)) return;
+  player.inventory.landMine -= 1;
+  playSfx("ui_click", 1);
+  messageEl.textContent = `Land mine placed! (${player.inventory.landMine} left)`;
+  const mesh = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18, 0.2, 0.08, 10),
+    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 }),
+  );
+  const pin = new THREE.Mesh(
+    new THREE.SphereGeometry(0.04, 6, 6),
+    new THREE.MeshBasicMaterial({ color: 0xcc0000 }),
+  );
+  pin.position.y = 0.06;
+  mesh.add(body, pin);
+  const pos = player.position.clone();
+  pos.y = terrainHeight(pos.x, pos.z) + 0.04;
+  mesh.position.copy(pos);
+  scene.add(mesh);
+  landMines.push({ mesh, position: pos.clone(), armed: true, radius: 2.5, damage: 75 });
+}
+
+function updateLandMines(dt) {
+  for (let i = landMines.length - 1; i >= 0; i--) {
+    const mine = landMines[i];
+    if (!mine.armed) continue;
+    for (const z of zombies) {
+      if (z.mesh.position.distanceTo(mine.position) < mine.radius) {
+        mine.armed = false;
+        scene.remove(mine.mesh);
+        disposeOwnedObject3D(mine.mesh);
+        createExplosion(mine.position, 5.5, mine.damage);
+        landMines.splice(i, 1);
+        break;
+      }
+    }
+  }
+}
+
+// ─── Spike Traps ─────────────────────────────────────────────────────────────
+function placeSpikeTrap() {
+  if (!pointerLocked || gameOver || !(player.inventory?.spikeTrap > 0)) return;
+  player.inventory.spikeTrap -= 1;
+  playSfx("ui_click", 1);
+  messageEl.textContent = `Spike trap placed! (${player.inventory.spikeTrap} left)`;
+  const mesh = new THREE.Group();
+  const plate = new THREE.Mesh(
+    new THREE.BoxGeometry(1.6, 0.06, 1.6),
+    new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.85 }),
+  );
+  const spikeMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.3, metalness: 0.8 });
+  for (let sx = -1; sx <= 1; sx += 1) {
+    for (let sz = -1; sz <= 1; sz += 1) {
+      const spike = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.28, 5), spikeMat);
+      spike.position.set(sx * 0.45, 0.16, sz * 0.45);
+      mesh.add(spike);
+    }
+  }
+  mesh.add(plate);
+  const pos = player.position.clone();
+  pos.y = terrainHeight(pos.x, pos.z) + 0.03;
+  mesh.position.copy(pos);
+  scene.add(mesh);
+  spikeTraps.push({ mesh, position: pos.clone(), radius: 1.2, damage: 35, cooldown: 0 });
+}
+
+function updateSpikeTraps(dt) {
+  for (let i = spikeTraps.length - 1; i >= 0; i--) {
+    const trap = spikeTraps[i];
+    trap.cooldown = Math.max(0, trap.cooldown - dt);
+    if (trap.cooldown > 0) continue;
+    for (const z of zombies) {
+      if (z.mesh.position.distanceTo(trap.position) < trap.radius) {
+        z.hp -= trap.damage;
+        trap.cooldown = 1.0;
+        spawnBloodParticles(z.mesh.position, 4);
+        if (z.hp <= 0) {
+          applyZombieDamage(zombies.indexOf(z), 0); // trigger death logic
+        }
+        break;
+      }
+    }
+    // Decay after 60 seconds
+    trap.life = (trap.life || 60) - dt;
+    if (trap.life <= 0) {
+      scene.remove(trap.mesh);
+      disposeOwnedObject3D(trap.mesh);
+      spikeTraps.splice(i, 1);
     }
   }
 }
@@ -5020,6 +5213,9 @@ function animate(nowMs) {
     updateBullets(dt);
     updatePickups(dt);
     updateGrenades(dt);
+    updateMolotovs(dt);
+    updateLandMines(dt);
+    updateSpikeTraps(dt);
     updateParticles(dt);
     updateCorpses(dt);
     updateSupplyDrops(dt);
@@ -5137,6 +5333,9 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyF" && gameOver) window.location.reload();
   if (e.code === "KeyG" && gameState === "PLAYING" && !gameOver) throwGrenade();
   if (e.code === "KeyV" && gameState === "PLAYING" && !gameOver) throwNoiseMaker();
+  if (e.code === "KeyJ" && gameState === "PLAYING" && !gameOver) throwMolotov();
+  if (e.code === "KeyK" && gameState === "PLAYING" && !gameOver && !e.repeat) placeLandMine();
+  if (e.code === "KeyL" && gameState === "PLAYING" && !gameOver && !e.repeat) placeSpikeTrap();
   if (e.code === "KeyF" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     if (activeVehicle) exitVehicle();
     else {
