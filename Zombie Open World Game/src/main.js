@@ -2,6 +2,26 @@ import "./style.css";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
+import {
+  getActiveWeapon,
+  getWeaponReserveCap,
+  syncPlayerAmmoFields,
+  commitPlayerAmmoFields,
+  switchToWeapon,
+  swapPlayerWeapon,
+  reloadWeapon,
+  applyWeaponUpgrade,
+  getUpgradeCost,
+  canAffordUpgrade,
+  deductUpgradeCost,
+  createCrossbowMesh,
+  createFlamethrowerMesh,
+  createSniperMesh,
+  createRocketLauncherMesh,
+  createWorldWeaponMesh,
+  initDefaultWeapons,
+} from "./combat/weaponSystem.js";
+import { showUpgradeBench, hideUpgradeBench } from "./ui/upgradeBench.js";
 import gunMetalDiffuseUrl from "./assets/textures/gun_metal_diffuse.jpg";
 import gunGripDiffuseUrl from "./assets/textures/gun_grip_diffuse.jpg";
 import teammateJacketDiffuseUrl from "./assets/textures/teammate_jacket_diffuse.jpg";
@@ -482,11 +502,7 @@ const player = {
   ammo: 20,
   reserveAmmo: 100,
   activeWeapon: 0,
-  weapons: [
-    { name: "Rifle", ammo: 20, reserve: 120, magSize: 20, damage: 26, fireDelay: 0.12, recoil: 1.0, range: 120, reloadTime: 1.25 },
-    { name: "Pistol", ammo: 12, reserve: 84, magSize: 12, damage: 18, fireDelay: 0.2, recoil: 0.65, range: 95, reloadTime: 1.1 },
-    { name: "Shotgun", ammo: 6, reserve: 30, magSize: 6, damage: 20, fireDelay: 0.85, recoil: 2.5, range: 25, reloadTime: 2.1, pellets: 8 },
-  ],
+  weapons: initDefaultWeapons(),
   kills: 0,
   shootCooldown: 0,
   reloadTimer: 0,
@@ -585,6 +601,16 @@ const weatherState = {
 let buildMode = false;
 let buildType = "wood"; // wood | metal
 
+let upgradeBenchOpen = false;
+const upgradeBenchUI = {
+  overlay: document.querySelector("#upgrade-bench"),
+  weaponList: document.querySelector("#upgrade-weapon-list"),
+  details: document.querySelector("#upgrade-details"),
+  weaponName: document.querySelector("#upgrade-weapon-name"),
+  grid: document.querySelector("#upgrade-grid"),
+  closeBtn: document.querySelector("#upgrade-bench-close"),
+};
+
 const teammates = [];
 /** Calm menu / death screen loop (distinct from in-game map tracks). */
 const TITLE_BGM_FILE = "title.mp3";
@@ -606,29 +632,7 @@ const audioSystem = {
   bgmNominalVolume: 0.55,
 };
 
-function getActiveWeapon() {
-  return player.weapons[player.activeWeapon];
-}
-
-function getWeaponReserveCap(weapon) {
-  if (!weapon) return 120;
-  if (weapon.name === "Rifle") return 240;
-  if (weapon.name === "Pistol") return 168;
-  if (weapon.name === "Shotgun") return 72;
-  return weapon.magSize * 10;
-}
-
-function syncPlayerAmmoFields() {
-  const w = getActiveWeapon();
-  player.ammo = w.ammo;
-  player.reserveAmmo = w.reserve;
-}
-
-function commitPlayerAmmoFields() {
-  const w = getActiveWeapon();
-  w.ammo = player.ammo;
-  w.reserve = player.reserveAmmo;
-}
+// Re-exported via weaponSystem.js imports at top of file.
 
 function clearInputState() {
   keys.clear();
@@ -1135,7 +1139,7 @@ function loadRun() {
       }
     }
     player.activeWeapon = save.activeWeapon || 0;
-    syncPlayerAmmoFields();
+    syncPlayerAmmoFields(player);
     waveSpawnBudget = 18 + wave * 8;
     settings.maxZombies = Math.min(80, 24 + wave * 5);
     return true;
@@ -2255,7 +2259,7 @@ function resetWorldForNewMap() {
   player.weapons[1].reserve = 84;
   player.weapons[2].ammo = 6;
   player.weapons[2].reserve = 30;
-  syncPlayerAmmoFields();
+  syncPlayerAmmoFields(player);
   score = 0;
   killStreak = 0;
   killStreakTimer = 0;
@@ -2527,8 +2531,8 @@ function canTeammateSeeZombie(mate, zombie) {
 
 function shoot() {
   if (!pointerLocked || gameOver || player.reloadTimer > 0 || player.shootCooldown > 0) return;
-  const weapon = getActiveWeapon();
-  syncPlayerAmmoFields();
+    const weapon = getActiveWeapon(player);
+  syncPlayerAmmoFields(player);
   if (player.ammo <= 0) {
     messageEl.textContent = "Out of ammo. Press R to reload.";
     return;
@@ -2588,35 +2592,27 @@ function shoot() {
       owner: "player",
     });
   }
-  commitPlayerAmmoFields();
+  commitPlayerAmmoFields(player);
 }
 
 function reload() {
-  syncPlayerAmmoFields();
-  const weapon = getActiveWeapon();
-  if (player.reloadTimer > 0 || player.ammo >= weapon.magSize || player.reserveAmmo <= 0) return;
-  const skillBonus = skills.reloadSpeed.value;
-  player.reloadTimer = (weapon.reloadTime || 1.25) * (1 - skillBonus);
-  playSfx("reload_player", 1);
-  messageEl.textContent = "Reloading...";
+  if (reloadWeapon(player, skills)) {
+    playSfx("reload_player", 1);
+    messageEl.textContent = "Reloading...";
+  }
 }
 
-function swapPlayerWeapon() {
-  if (player.reloadTimer > 0) return;
-  commitPlayerAmmoFields();
-  player.activeWeapon = (player.activeWeapon + 1) % player.weapons.length;
-  syncPlayerAmmoFields();
+function doSwapPlayerWeapon() {
+  swapPlayerWeapon(player);
   playSfx("ui_click", 1);
-  messageEl.textContent = `Swapped to ${getActiveWeapon().name}.`;
+  messageEl.textContent = `Swapped to ${getActiveWeapon(player).name}.`;
 }
 
-function switchToWeapon(index) {
-  if (player.reloadTimer > 0 || index === player.activeWeapon || index < 0 || index >= player.weapons.length) return;
-  commitPlayerAmmoFields();
-  player.activeWeapon = index;
-  syncPlayerAmmoFields();
-  playSfx("ui_click", 1);
-  messageEl.textContent = `Switched to ${getActiveWeapon().name}.`;
+function doSwitchToWeapon(index) {
+  if (switchToWeapon(player, index)) {
+    playSfx("ui_click", 1);
+    messageEl.textContent = `Switched to ${getActiveWeapon(player).name}.`;
+  }
 }
 
 function updateWeapon(dt) {
@@ -2629,7 +2625,7 @@ function updateWeapon(dt) {
   weaponKick = Math.max(0, weaponKick - dt * 11);
   lookSwayX *= Math.exp(-dt * 18);
   lookSwayY *= Math.exp(-dt * 18);
-  const weapon = getActiveWeapon();
+  const weapon = getActiveWeapon(player);
   const isPistol = weapon.name === "Pistol";
   const isShotgun = weapon.name === "Shotgun";
 
@@ -2905,7 +2901,7 @@ function updatePickups(dt) {
         const gain = w.name === "Shotgun" ? 4 : 12;
         w.reserve = Math.min(getWeaponReserveCap(w), w.reserve + gain);
       }
-      syncPlayerAmmoFields();
+      syncPlayerAmmoFields(player);
       player.hp = Math.min(getPlayerMaxHealth(), player.hp + 8);
       scene.remove(p.mesh);
       pickups.splice(i, 1);
@@ -3539,6 +3535,28 @@ function switchBuildType() {
   messageEl.textContent = `Build mode: ${buildType.toUpperCase()} (B to build, N to switch)`;
 }
 
+// ─── Upgrade Bench ───────────────────────────────────────────────────────────
+function openUpgradeBench() {
+  if (gameState !== "PLAYING" || gameOver) return;
+  paused = true;
+  upgradeBenchOpen = true;
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  showUpgradeBench(upgradeBenchUI, player, materials, skills, () => {
+    updateHUDMaterials();
+    syncPlayerAmmoFields(player);
+  });
+  if (upgradeBenchUI.closeBtn) {
+    upgradeBenchUI.closeBtn.onclick = () => closeUpgradeBench();
+  }
+}
+
+function closeUpgradeBench() {
+  upgradeBenchOpen = false;
+  hideUpgradeBench(upgradeBenchUI);
+  paused = false;
+  if (!gameOver) canvas.requestPointerLock();
+}
+
 function updateHUDMaterials() {
   if (extraMetaEl) {
     const m = materials;
@@ -3793,11 +3811,12 @@ function updateHud(dt) {
   const maxHp = getPlayerMaxHealth();
   healthFillEl.style.width = `${Math.max(0, Math.min(100, (player.hp / maxHp) * 100))}%`;
   staminaFillEl.style.width = `${player.stamina}%`;
-  syncPlayerAmmoFields();
-  const activeWpn = getActiveWeapon();
+  syncPlayerAmmoFields(player);
+  const activeWpn = getActiveWeapon(player);
   const ammoLabel = activeWpn.pellets ? `${player.ammo}/${player.reserveAmmo} shells` : `${player.ammo}/${player.reserveAmmo}`;
-  const wpnNum = player.activeWeapon === 0 ? "[1]" : player.activeWeapon === 1 ? "[2]" : "[3]";
-  statsMetaEl.textContent = `Map: ${activeMapConfig.name} | ${activeWpn.name} ${wpnNum} | ${ammoLabel} | Kills: ${player.kills} | Zombies: ${zombies.length} | Team: ${teammates.length + 1}`;
+  const wpnNum = `[${player.activeWeapon + 1}]`;
+  const wpnUpg = activeWpn.upgrades && Object.keys(activeWpn.upgrades).length > 0 ? " +" : "";
+  statsMetaEl.textContent = `Map: ${activeMapConfig.name} | ${activeWpn.name}${wpnUpg} ${wpnNum} | ${ammoLabel} | Kills: ${player.kills} | Zombies: ${zombies.length} | Team: ${teammates.length + 1}`;
   if (extraMetaEl) extraMetaEl.textContent = `💣 ${grenadeCount} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}`;
   if (skillMetaEl) {
     const activeSkills = Object.values(skills)
@@ -4468,7 +4487,7 @@ function animate(nowMs) {
   const dt = Math.min(0.05, now - (animate.lastTime || now));
   animate.lastTime = now;
 
-  if (gameState === "PLAYING" && !gameOver) {
+  if (gameState === "PLAYING" && !gameOver && !upgradeBenchOpen) {
 
     gameTime += dt;
     spawnTimer -= dt;
@@ -4477,13 +4496,13 @@ function animate(nowMs) {
     if (player.reloadTimer > 0) {
       player.reloadTimer -= dt;
       if (player.reloadTimer <= 0) {
-        syncPlayerAmmoFields();
-        const weapon = getActiveWeapon();
+        syncPlayerAmmoFields(player);
+        const weapon = getActiveWeapon(player);
         const needed = weapon.magSize - player.ammo;
         const loaded = Math.min(needed, player.reserveAmmo);
         player.ammo += loaded;
         player.reserveAmmo -= loaded;
-        commitPlayerAmmoFields();
+        commitPlayerAmmoFields(player);
         messageEl.textContent = "Reloaded.";
       }
     }
@@ -4575,7 +4594,12 @@ window.addEventListener("mousemove", (e) => {
 window.addEventListener("keydown", (e) => {
   keys.add(e.code);
   if (e.code === "KeyR" && gameState === "PLAYING") reload();
-  if (e.code === "KeyQ" && gameState === "PLAYING") swapPlayerWeapon();
+  if (e.code === "KeyQ" && gameState === "PLAYING") doSwapPlayerWeapon();
+  if (e.code === "KeyU" && gameState === "PLAYING" && !gameOver && !e.repeat) {
+    e.preventDefault();
+    if (upgradeBenchOpen) closeUpgradeBench();
+    else openUpgradeBench();
+  }
   if (e.code === "KeyT") {
     for (const mate of teammates) {
       mate.activeWeapon = (mate.activeWeapon + 1) % mate.weapons.length;
@@ -4612,12 +4636,21 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     saveRun();
   }
-  if (e.code === "KeyE" && gameState === "PLAYING") swapPlayerWeapon();
-  // Direct weapon switching: 1 = Rifle, 2 = Shotgun, 3 = Pistol
+  if (e.code === "KeyE" && gameState === "PLAYING") doSwapPlayerWeapon();
+  // Direct weapon switching: 1-7 maps to weapon slots
   if (!e.shiftKey && !e.repeat && gameState === "PLAYING") {
-    if (e.code === "Digit1") { e.preventDefault(); switchToWeapon(0); }
-    if (e.code === "Digit2") { e.preventDefault(); switchToWeapon(2); }
-    if (e.code === "Digit3") { e.preventDefault(); switchToWeapon(1); }
+    if (e.code === "Digit1") { e.preventDefault(); doSwitchToWeapon(0); }
+    if (e.code === "Digit2") { e.preventDefault(); doSwitchToWeapon(1); }
+    if (e.code === "Digit3") { e.preventDefault(); doSwitchToWeapon(2); }
+    if (e.code === "Digit4") { e.preventDefault(); doSwitchToWeapon(3); }
+    if (e.code === "Digit5") { e.preventDefault(); doSwitchToWeapon(4); }
+    if (e.code === "Digit6") { e.preventDefault(); doSwitchToWeapon(5); }
+    if (e.code === "Digit7") { e.preventDefault(); doSwitchToWeapon(6); }
+  }
+  if (e.code === "KeyU" && gameState === "PLAYING" && !gameOver && !e.repeat) {
+    e.preventDefault();
+    if (upgradeBenchOpen) closeUpgradeBench();
+    else openUpgradeBench();
   }
   if (e.code === "KeyC" && gameState === "PLAYING" && !gameOver) {
     isCrouching = !isCrouching;
@@ -4677,7 +4710,7 @@ window.addEventListener("resize", () => {
   for (let i = 0; i < 3; i += 1) {
     teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplate, remingtonTemplate, pistolTemplate));
   }
-  syncPlayerAmmoFields();
+  syncPlayerAmmoFields(player);
   updateAudioButtonLabel();
   setMenuMode("title");
   messageEl.textContent = "Pick a map, then Start. Q swap, T team swap, P pause, M audio. B build, N switch build type.";

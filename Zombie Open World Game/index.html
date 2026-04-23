@@ -25,7 +25,7 @@
             <button id="btn-restart" class="is-hidden">Restart Run</button>
             <button id="btn-audio">Audio: On</button>
           </div>
-          <p class="menu-help">WASD Move · Shift Sprint · C Crouch · Space Jump · Click/LMB Shoot · RMB Aim Down Sights · R Reload · 1/2/3 Weapon Slots (Rifle/Shotgun/Pistol) · Q/E Swap Weapon · G Grenade · V Noise Maker · F Melee Knife · B Build Barricade · N Switch Build Type · T Team Swap · P Pause · M Audio. Scavenge materials from zombies! Build wood/metal barricades! Watch for ★ Supply Drops! Special Zombies: Spitter (acid), Hunter (pounces), Charger (charges), Crawler (low)! Corpses revive if not headshot!</p>
+          <p class="menu-help">WASD Move · Shift Sprint · C Crouch · Space Jump · Click/LMB Shoot · RMB Aim Down Sights · R Reload · 1-7 Weapon Slots · Q/E Swap Weapon · G Grenade · V Noise Maker · F Melee Knife · B Build Barricade · N Switch Build Type · U Weapon Upgrade Bench · T Team Swap · P Pause · M Audio. Scavenge materials from zombies! Build wood/metal barricades! Upgrade weapons at benches! Watch for ★ Supply Drops! Special Zombies: Spitter (acid), Hunter (pounces), Charger (charges), Crawler (low)! Corpses revive if not headshot!</p>
           <p class="menu-credits">Buildings &amp; street atlas: Kenney.nl (CC0). Pistol GLB: Webaverse (github.com/webaverse/pistol). Music: Kevin MacLeod (incompetech.com) — Title: Floating Cities; maps + Outbreak City: Movement Proposition, Darkest Child, Frost Waltz, Crossing the Chasm, Volatile Reaction, District Four. CC BY — see incompetech.com.</p>
         </div>
       </div>
@@ -52,6 +52,20 @@
       <div id="kill-streak-display"></div>
       <div id="night-indicator"></div>
       <div id="build-hint"></div>
+    </div>
+    <div id="upgrade-bench" class="upgrade-bench-overlay is-hidden">
+      <div class="upgrade-bench-card">
+        <h2>Weapon Upgrade Bench</h2>
+        <p class="upgrade-bench-subtitle">Select a weapon to upgrade using scavenged materials.</p>
+        <div id="upgrade-weapon-list" class="upgrade-weapon-list"></div>
+        <div id="upgrade-details" class="upgrade-details is-hidden">
+          <div class="upgrade-weapon-name" id="upgrade-weapon-name"></div>
+          <div class="upgrade-grid" id="upgrade-grid"></div>
+        </div>
+        <div class="upgrade-bench-actions">
+          <button id="upgrade-bench-close">Close</button>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
