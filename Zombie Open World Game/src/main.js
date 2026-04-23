@@ -22,6 +22,10 @@ import {
   initDefaultWeapons,
 } from "./combat/weaponSystem.js";
 import { showUpgradeBench, hideUpgradeBench } from "./ui/upgradeBench.js";
+import { createInventoryOverlay, showInventory, hideInventory } from "./ui/inventory.js";
+import { createEventDirector, updateEventDirector, executeEvent, isSurvivorAlive, damageSurvivor, EVENT_TYPES } from "./game/events.js";
+import { createMissionGenerator, updateMissions, onMaterialCollected, onZombieKilled, getMissionRewards, formatMissionStatus, MISSION_TYPES } from "./game/missionSystem.js";
+import { loadProgression, addGlobalXP, getLevel, formatProgression } from "./game/progression.js";
 import gunMetalDiffuseUrl from "./assets/textures/gun_metal_diffuse.jpg";
 import gunGripDiffuseUrl from "./assets/textures/gun_grip_diffuse.jpg";
 import teammateJacketDiffuseUrl from "./assets/textures/teammate_jacket_diffuse.jpg";
@@ -564,6 +568,10 @@ const zombieCorpses = [];
 const distractions = [];
 const supplyDrops = [];
 
+// Dynamic Event Director
+const eventDirector = createEventDirector();
+const missionGenerator = createMissionGenerator();
+
 // Skill/Perk System
 const skills = {
   reloadSpeed: { level: 0, max: 3, value: 0, name: "Fast Hands" },
@@ -576,6 +584,7 @@ let skillPoints = 0;
 let skillXp = 0;
 let meleeCooldown = 0;
 let noiseMakerCount = 2;
+const playerProgression = loadProgression();
 
 /** Scavenging / Crafting materials */
 const materials = {
@@ -610,6 +619,23 @@ const upgradeBenchUI = {
   grid: document.querySelector("#upgrade-grid"),
   closeBtn: document.querySelector("#upgrade-bench-close"),
 };
+
+// Inventory system
+let inventoryOpen = false;
+const inventoryUI = createInventoryOverlay();
+if (inventoryUI.closeBtn) {
+  inventoryUI.closeBtn.addEventListener("click", () => {
+    inventoryOpen = false;
+    hideInventory(inventoryUI);
+    paused = false;
+    if (!gameOver) canvas.requestPointerLock();
+  });
+}
+
+// Vehicle system
+const vehicles = [];
+let activeVehicle = null;
+let vehicleInput = { forward: false, backward: false, left: false, right: false };
 
 const teammates = [];
 /** Calm menu / death screen loop (distinct from in-game map tracks). */
@@ -1063,7 +1089,16 @@ function setMenuMode(mode) {
   } else if (mode === "death") {
     gameState = "MENU_DEATH";
     menuTitleEl.textContent = "You Died";
-    menuSubtitleEl.textContent = `Wave ${wave} | Kills ${player.kills} | Score ${score}`;
+    const runXP = Math.floor(score * 0.05 + player.kills * 2);
+    const progResult = addGlobalXP(playerProgression, runXP);
+    let progMsg = `Wave ${wave} | Kills ${player.kills} | Score ${score} | +${runXP} Global XP`;
+    if (progResult.leveled) {
+      progMsg += ` | ⬆ Lvl ${getLevel(playerProgression)}!`;
+      if (progResult.newUnlocks.length > 0) {
+        progMsg += ` Unlocked: ${progResult.newUnlocks.map((u) => u.name).join(", ")}!`;
+      }
+    }
+    menuSubtitleEl.textContent = progMsg;
     startBtnEl.classList.add("is-hidden");
     resumeBtnEl.classList.add("is-hidden");
     restartBtnEl.classList.remove("is-hidden");
@@ -1220,6 +1255,16 @@ const chargerClothMat = new THREE.MeshStandardMaterial({ color: 0x5a3a2a, roughn
 const chargerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a6a5a, roughness: 0.65 });
 const acidSacMat = new THREE.MeshStandardMaterial({ color: 0x88cc44, emissive: 0x446622, emissiveIntensity: 0.3 });
 
+/** New special infected materials */
+const juggernautClothMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9, metalness: 0.1 });
+const juggernautSkinMat = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.7, bumpMap: zombieSkinDetail, bumpScale: 0.04 });
+const juggernautArmorMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.7 });
+const boomerClothMat = new THREE.MeshStandardMaterial({ color: 0x5a6b2a, roughness: 0.85 });
+const boomerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a9a4a, roughness: 0.7 });
+const boomerBloatMat = new THREE.MeshStandardMaterial({ color: 0xaacc44, emissive: 0x668822, emissiveIntensity: 0.25, transparent: true, opacity: 0.85 });
+const screamerClothMat = new THREE.MeshStandardMaterial({ color: 0x4a3a5a, roughness: 0.8 });
+const screamerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a7aaa, roughness: 0.65 });
+
 /** Shared eye materials (prevents per-zombie material leaks). */
 const eyeMaterials = {
   walker: new THREE.MeshBasicMaterial({ color: 0xf7f3b2 }),
@@ -1229,6 +1274,9 @@ const eyeMaterials = {
   charger: new THREE.MeshBasicMaterial({ color: 0xff8844 }),
   brute: new THREE.MeshBasicMaterial({ color: 0xf7f3b2 }),
   crawler: new THREE.MeshBasicMaterial({ color: 0xf7f3b2 }),
+  juggernaut: new THREE.MeshBasicMaterial({ color: 0xff6600 }),
+  boomer: new THREE.MeshBasicMaterial({ color: 0xccff44 }),
+  screamer: new THREE.MeshBasicMaterial({ color: 0xaa44ff }),
 };
 
 const teammateJacketMaterial = new THREE.MeshStandardMaterial({
@@ -2319,6 +2367,19 @@ function resetWorldForNewMap() {
     disposeObject3D(b.mesh);
   }
   barricades.length = 0;
+  for (const v of vehicles) {
+    scene.remove(v.mesh);
+    v.mesh.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        o.geometry?.dispose();
+        if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
+        else o.material?.dispose();
+      }
+    });
+  }
+  vehicles.length = 0;
+  activeVehicle = null;
+  vehicleInput = { forward: false, backward: false, left: false, right: false };
   clearWeather();
 
   // Reset materials
@@ -2336,8 +2397,9 @@ function resetWorldForNewMap() {
 
 function addZombie(x, z, forceType = null) {
   const roll = Math.random();
-  // Special infected chance increases with wave
-  const specialChance = Math.min(0.25, wave * 0.02);
+  // Special infected chance increases with wave; new types appear from wave 3+
+  const specialChance = Math.min(0.30, wave * 0.025);
+  const newTypeChance = wave >= 3 ? Math.min(0.12, (wave - 2) * 0.015) : 0;
   let type = forceType;
 
   if (!type) {
@@ -2346,14 +2408,25 @@ function addZombie(x, z, forceType = null) {
     else if (roll < 0.36) type = "crawler";
     else if (roll < 0.36 + specialChance) {
       const specialRoll = Math.random();
-      if (specialRoll < 0.33) type = "spitter";
-      else if (specialRoll < 0.66) type = "hunter";
-      else type = "charger";
+      if (specialRoll < 0.25) type = "spitter";
+      else if (specialRoll < 0.50) type = "hunter";
+      else if (specialRoll < 0.75) type = "charger";
+      else if (wave >= 3 && specialRoll < 0.85) {
+        const newRoll = Math.random();
+        if (newRoll < 0.33) type = "juggernaut";
+        else if (newRoll < 0.66) type = "boomer";
+        else type = "screamer";
+      } else type = "charger";
+    } else if (roll < 0.36 + specialChance + newTypeChance) {
+      const newRoll = Math.random();
+      if (newRoll < 0.33) type = "juggernaut";
+      else if (newRoll < 0.66) type = "boomer";
+      else type = "screamer";
     } else type = "walker";
   }
 
   const group = new THREE.Group();
-  const isSpecial = ["spitter", "hunter", "charger"].includes(type);
+  const isSpecial = ["spitter", "hunter", "charger", "juggernaut", "boomer", "screamer"].includes(type);
 
   // Special infected materials (shared to prevent per-instance leaks)
   let skinMat = zombieSkinMaterial;
@@ -2361,6 +2434,9 @@ function addZombie(x, z, forceType = null) {
   if (type === "spitter") { clothMat = spitterClothMat; skinMat = spitterSkinMat; }
   else if (type === "hunter") { clothMat = hunterClothMat; skinMat = hunterSkinMat; }
   else if (type === "charger") { clothMat = chargerClothMat; skinMat = chargerSkinMat; }
+  else if (type === "juggernaut") { clothMat = juggernautClothMat; skinMat = juggernautSkinMat; }
+  else if (type === "boomer") { clothMat = boomerClothMat; skinMat = boomerSkinMat; }
+  else if (type === "screamer") { clothMat = screamerClothMat; skinMat = screamerSkinMat; }
 
   // Reuse shared geometries by scaling meshes instead of creating new BoxGeometry/SphereGeometry per zombie
   const hips = new THREE.Mesh(gBox1x1x1, clothMat);
@@ -2411,6 +2487,38 @@ function addZombie(x, z, forceType = null) {
     group.add(acidSac);
   }
 
+  // Juggernaut has metal armor plates
+  if (type === "juggernaut") {
+    const chestPlate = new THREE.Mesh(gBox1x1x1, juggernautArmorMat);
+    chestPlate.scale.set(0.94, 0.72, 0.52);
+    chestPlate.position.set(0, 1.48, 0.04);
+    const shoulderL = new THREE.Mesh(gSphere1, juggernautArmorMat);
+    shoulderL.scale.set(0.18, 0.18, 0.18);
+    shoulderL.position.set(-0.62, 1.82, 0);
+    const shoulderR = new THREE.Mesh(gSphere1, juggernautArmorMat);
+    shoulderR.scale.set(0.18, 0.18, 0.18);
+    shoulderR.position.set(0.62, 1.82, 0);
+    group.add(chestPlate, shoulderL, shoulderR);
+  }
+
+  // Boomer has a bloated stomach sac
+  if (type === "boomer") {
+    const bloat = new THREE.Mesh(gSphere1, boomerBloatMat);
+    bloat.scale.set(0.52, 0.48, 0.44);
+    bloat.position.set(0, 1.42, 0.18);
+    group.add(bloat);
+  }
+
+  // Screamer has enlarged jaw / mouth
+  if (type === "screamer") {
+    jaw.scale.set(0.38, 0.18, 0.30);
+    jaw.position.set(0, 1.88, 0.28);
+    const throat = new THREE.Mesh(gSphere1, screamerSkinMat);
+    throat.scale.set(0.18, 0.22, 0.18);
+    throat.position.set(0, 1.72, 0.06);
+    group.add(throat);
+  }
+
   group.add(hips, torso, head, jaw, leftArm, rightArm, leftLeg, rightLeg, eyeLeft, eyeRight);
   group.position.set(x, terrainHeight(x, z), z);
 
@@ -2423,6 +2531,9 @@ function addZombie(x, z, forceType = null) {
     group.scale.set(0.95, 0.55, 0.95);
     group.position.y = terrainHeight(x, z);
   }
+  if (type === "juggernaut") group.scale.setScalar(1.45);
+  if (type === "boomer") group.scale.set(1.05, 1.15, 1.05);
+  if (type === "screamer") group.scale.set(0.92, 1.02, 0.92);
 
   group.traverse((obj) => {
     if (obj instanceof THREE.Mesh) obj.castShadow = true;
@@ -2437,6 +2548,9 @@ function addZombie(x, z, forceType = null) {
   else if (type === "spitter") { hp = 45; maxHp = 45; speed = settings.zombieSpeed * 0.85; damage = 4; }
   else if (type === "hunter") { hp = 38; maxHp = 38; speed = settings.runnerSpeed * 1.3; damage = 12; }
   else if (type === "charger") { hp = 95; maxHp = 95; speed = settings.zombieSpeed * 1.15; damage = 18; }
+  else if (type === "juggernaut") { hp = 300; maxHp = 300; speed = settings.zombieSpeed * 0.4; damage = 22; }
+  else if (type === "boomer") { hp = 60; maxHp = 60; speed = settings.zombieSpeed * 0.7; damage = 6; }
+  else if (type === "screamer") { hp = 40; maxHp = 40; speed = settings.zombieSpeed * 1.2; damage = 3; }
 
   zombies.push({
     mesh: group,
@@ -2464,6 +2578,12 @@ function addZombie(x, z, forceType = null) {
     chargeDirection: new THREE.Vector3(),
     attackAnimating: false,
     attackAnimTime: 0,
+    // New infected abilities
+    screamCooldown: type === "screamer" ? 6 + Math.random() * 4 : 0,
+    hasScreamed: false,
+    isFleeing: type === "screamer" ? true : false,
+    ignoreBarricades: type === "juggernaut",
+    boomerExploded: false,
   });
 }
 
@@ -2471,6 +2591,108 @@ function spawnZombieNearPlayer() {
   const angle = Math.random() * Math.PI * 2;
   const distance = 25 + Math.random() * 35;
   addZombie(player.position.x + Math.cos(angle) * distance, player.position.z + Math.sin(angle) * distance);
+}
+
+// ─── Vehicle System ─────────────────────────────────────────────────────────
+import { createVehicle, updateVehicle, damageVehicle, repairVehicle, refuelVehicle, upgradeVehicleArmor, upgradeVehicleEngine, VEHICLE_TYPES } from "./entities/vehicle.js";
+
+function spawnVehiclesForMap() {
+  const count = activeMapConfig.id === "outbreak_city" ? 4 : 2;
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 20 + Math.random() * 60;
+    const x = Math.cos(angle) * dist;
+    const z = Math.sin(angle) * dist;
+    const types = [VEHICLE_TYPES.JEEP, VEHICLE_TYPES.TRUCK, VEHICLE_TYPES.MOTORCYCLE];
+    const type = types[Math.floor(Math.random() * types.length)];
+    const vehicle = createVehicle(type, x, z, terrainHeight);
+    vehicles.push(vehicle);
+    scene.add(vehicle.mesh);
+  }
+}
+
+function findNearestVehicle() {
+  let nearest = null;
+  let nearestDist = 5.0; // Max interaction distance
+  for (const v of vehicles) {
+    const d = player.position.distanceTo(v.mesh.position);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearest = v;
+    }
+  }
+  return nearest;
+}
+
+function enterVehicle(vehicle) {
+  if (vehicle.destroyed || vehicle.occupied) return false;
+  vehicle.occupied = true;
+  vehicle.driver = "player";
+  activeVehicle = vehicle;
+  camera.position.copy(vehicle.mesh.position);
+  camera.position.y += 2.5;
+  firstPersonWeapon.rig.visible = false;
+  messageEl.textContent = `Entered ${vehicle.type.toUpperCase()}! WASD drive, Space brake, F exit, H horn.`;
+  return true;
+}
+
+function exitVehicle() {
+  if (!activeVehicle) return;
+  const v = activeVehicle;
+  v.occupied = false;
+  v.driver = null;
+  // Place player beside vehicle
+  const side = new THREE.Vector3(Math.cos(v.yaw + Math.PI / 2), 0, Math.sin(v.yaw + Math.PI / 2));
+  player.position.copy(v.mesh.position).addScaledVector(side, 2.5);
+  player.position.y = terrainHeight(player.position.x, player.position.z) + 1.8;
+  activeVehicle = null;
+  firstPersonWeapon.rig.visible = true;
+  messageEl.textContent = "Exited vehicle.";
+}
+
+function updateVehicles(dt) {
+  for (const vehicle of vehicles) {
+    if (vehicle.destroyed) continue;
+    if (activeVehicle === vehicle) {
+      updateVehicle(vehicle, dt, vehicleInput, terrainHeight);
+      // Camera follows vehicle
+      const camOffset = new THREE.Vector3(0, 3.5, 5.5);
+      camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.yaw);
+      camera.position.lerp(vehicle.mesh.position.clone().add(camOffset), 0.15);
+      camera.lookAt(vehicle.mesh.position.clone().add(new THREE.Vector3(0, 1, 0)));
+    }
+    // Zombies damage vehicles
+    for (const zombie of zombies) {
+      const d = zombie.mesh.position.distanceTo(vehicle.mesh.position);
+      if (d < 2.5) {
+        const destroyed = damageVehicle(vehicle, zombie.damage * dt);
+        if (destroyed && !vehicle.destroyed) {
+          vehicle.destroyed = true;
+          createExplosion(vehicle.mesh.position, 6, 60);
+          playSpatialSfx("explosion", vehicle.mesh.position, 1);
+          topCenterAlertEl.textContent = "💥 VEHICLE DESTROYED!";
+          alertTimer = 2.5;
+          if (activeVehicle === vehicle) {
+            exitVehicle();
+            player.hp -= 25;
+            player.damageFlash = 1.0;
+            messageEl.textContent = "Vehicle exploded! You were thrown clear!";
+          }
+        }
+      }
+    }
+  }
+  // Remove destroyed vehicles after a delay
+  for (let i = vehicles.length - 1; i >= 0; i--) {
+    if (vehicles[i].destroyed && activeVehicle !== vehicles[i]) {
+      const v = vehicles[i];
+      v.hp -= dt * 10; // Fade out timer
+      if (v.hp <= -30) {
+        scene.remove(v.mesh);
+        vehicles.splice(i, 1);
+      }
+    }
+  }
 }
 
 function spawnBullet(origin, direction, damage, options = {}) {
@@ -2812,11 +3034,28 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
     const pos = zombie.mesh.position.clone();
     const wasBoss = zombie.isBoss;
     const zombieType = zombie.type;
-    const isSpecial = ["spitter", "hunter", "charger"].includes(zombieType);
+    const isSpecial = ["spitter", "hunter", "charger", "juggernaut", "boomer", "screamer"].includes(zombieType);
 
     // Create corpse for revival mechanic (unless headshot)
-    if (!isHeadshot && !wasBoss) {
+    if (!isHeadshot && !wasBoss && zombieType !== "boomer") {
       createZombieCorpse(pos, zombieType, zombie.mesh.rotation.y);
+    }
+
+    // Boomer explosion on death
+    if (zombieType === "boomer" && !zombie.boomerExploded) {
+      zombie.boomerExploded = true;
+      createExplosion(pos, 4, 35);
+      playSpatialSfx("explosion", pos, 0.8);
+      // Toxic cloud
+      const cloudGeo = new THREE.SphereGeometry(3.5, 12, 12);
+      const cloudMat = new THREE.MeshBasicMaterial({ color: 0x88cc44, transparent: true, opacity: 0.35 });
+      const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+      cloud.position.copy(pos);
+      cloud.position.y += 1;
+      scene.add(cloud);
+      acidPuddles.push({ mesh: cloud, life: 5, maxLife: 5, radius: 3.5, damagePerSecond: 12 });
+      topCenterAlertEl.textContent = "💥 BOOMER EXPLODED! Toxic cloud!";
+      alertTimer = 2;
     }
 
     scene.remove(zombie.mesh);
@@ -2826,10 +3065,19 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
     playSpatialSfx("zombie_death", pos, 1);
     maybeDropPickup(pos);
     if (!wasBoss && Math.random() < 0.45) spawnMaterialDrop(pos);
+    // Juggernaut drops rare materials
+    if (zombieType === "juggernaut") {
+      spawnMaterialDrop(pos);
+      spawnMaterialDrop(pos);
+      if (Math.random() < 0.5) spawnMaterialDrop(pos);
+      score += 200;
+      topCenterAlertEl.textContent = "★ JUGGERNAUT DOWN! +200 pts";
+      alertTimer = 2.5;
+    }
     spawnBloodParticles(pos, 14);
 
     // Skill XP gain
-    addSkillXP(wasBoss ? 50 : isSpecial ? 25 : 10);
+    addSkillXP(wasBoss ? 50 : zombieType === "juggernaut" ? 40 : zombieType === "boomer" ? 20 : zombieType === "screamer" ? 15 : isSpecial ? 25 : 10);
 
     if (wasBoss) {
       bossAlive = false;
@@ -3144,6 +3392,17 @@ function updateZombies(dt) {
       }
     }
 
+    // Target stranded survivor if active
+    if (isSurvivorAlive(eventDirector) && eventDirector.survivorPosition) {
+      const sPos = new THREE.Vector3(eventDirector.survivorPosition.x, eventDirector.survivorPosition.y, eventDirector.survivorPosition.z);
+      const d2 = zombie.mesh.position.distanceToSquared(sPos);
+      if (d2 < nearestDistanceSq) {
+        nearestDistanceSq = d2;
+        targetPosition.copy(sPos);
+        targetIsPlayer = false;
+      }
+    }
+
     const toTarget = getV3().subVectors(targetPosition, zombie.mesh.position);
     toTarget.y = 0;
     const distance = toTarget.length();
@@ -3247,6 +3506,39 @@ function updateZombies(dt) {
       } else if (distance < 52) {
         zombie.mesh.position.addScaledVector(toTarget.normalize(), zombie.speed * nightSpeedMult * dt);
       }
+    } else if (zombie.type === "juggernaut") {
+      // Juggernaut ignores barricades and walks straight toward player
+      if (distance < 52) {
+        zombie.mesh.position.addScaledVector(toTarget.normalize(), zombie.speed * nightSpeedMult * dt);
+      }
+    } else if (zombie.type === "boomer") {
+      // Boomer moves slowly toward player; if hit or within 3m, it explodes
+      if (distance < 52) {
+        zombie.mesh.position.addScaledVector(toTarget.normalize(), zombie.speed * nightSpeedMult * dt);
+      }
+    } else if (zombie.type === "screamer") {
+      // Screamer tries to maintain distance, then screams and spawns zombies
+      zombie.screamCooldown -= dt;
+      if (distance < 30 && distance > 10 && zombie.screamCooldown <= 0 && !zombie.hasScreamed) {
+        zombie.screamCooldown = 8 + Math.random() * 4;
+        zombie.hasScreamed = true;
+        playSpatialSfx("zombie_growl", zombie.mesh.position, 1.2);
+        // Spawn 3-5 extra zombies nearby
+        const screamCount = 3 + Math.floor(Math.random() * 3);
+        for (let s = 0; s < screamCount; s++) {
+          const sAngle = Math.random() * Math.PI * 2;
+          const sDist = 15 + Math.random() * 20;
+          addZombie(zombie.mesh.position.x + Math.cos(sAngle) * sDist, zombie.mesh.position.z + Math.sin(sAngle) * sDist);
+        }
+        topCenterAlertEl.textContent = "⚠ SCREAMER! Horde incoming!";
+        alertTimer = 2.5;
+      }
+      if (distance < 10) {
+        // Run away from player
+        zombie.mesh.position.addScaledVector(toTarget.normalize(), -zombie.speed * nightSpeedMult * dt * 0.8);
+      } else if (distance < 52) {
+        zombie.mesh.position.addScaledVector(toTarget.normalize(), zombie.speed * nightSpeedMult * 0.7 * dt);
+      }
     } else {
       // Normal zombie movement
       if (distance < 52) {
@@ -3313,13 +3605,19 @@ function updateZombies(dt) {
       if (targetIsPlayer) {
         player.hp -= zombie.damage;
         player.damageFlash = 0.9;
-        messageEl.textContent = zombie.type === "brute" ? "Brute smash!" : zombie.type === "spitter" ? "Spitter clawed you!" : zombie.type === "hunter" ? "Hunter slashed!" : zombie.type === "charger" ? "Charger punched!" : zombie.type === "crawler" ? "Crawler bit you!" : "A zombie hit you!";
+        messageEl.textContent = zombie.type === "brute" ? "Brute smash!" : zombie.type === "spitter" ? "Spitter clawed you!" : zombie.type === "hunter" ? "Hunter slashed!" : zombie.type === "charger" ? "Charger punched!" : zombie.type === "crawler" ? "Crawler bit you!" : zombie.type === "juggernaut" ? "Juggernaut crushed you!" : zombie.type === "boomer" ? "Boomer clawed you!" : zombie.type === "screamer" ? "Screamer scratched you!" : "A zombie hit you!";
         if (player.hp <= 0) {
           player.hp = 0;
           gameOver = true;
           messageEl.textContent = "You died.";
           if (document.pointerLockElement === canvas) document.exitPointerLock();
           setMenuMode("death");
+        }
+      } else if (isSurvivorAlive(eventDirector) && distance < attackDistance && eventDirector.survivorPosition) {
+        const sPos = new THREE.Vector3(eventDirector.survivorPosition.x, eventDirector.survivorPosition.y, eventDirector.survivorPosition.z);
+        if (zombie.mesh.position.distanceTo(sPos) < attackDistance + 1) {
+          const sHP = damageSurvivor(eventDirector, zombie.damage);
+          messageEl.textContent = `Survivor under attack! HP: ${Math.max(0, Math.floor(sHP))}`;
         }
       } else {
         messageEl.textContent = "Teammate engaged!";
@@ -3557,6 +3855,21 @@ function closeUpgradeBench() {
   if (!gameOver) canvas.requestPointerLock();
 }
 
+function openInventory() {
+  if (gameState !== "PLAYING" || gameOver) return;
+  paused = true;
+  inventoryOpen = true;
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  showInventory(inventoryUI, materials, player);
+}
+
+function closeInventory() {
+  inventoryOpen = false;
+  hideInventory(inventoryUI);
+  paused = false;
+  if (!gameOver) canvas.requestPointerLock();
+}
+
 function updateHUDMaterials() {
   if (extraMetaEl) {
     const m = materials;
@@ -3567,6 +3880,7 @@ function updateHUDMaterials() {
 
 // ─── Zombie hits barricades ──────────────────────────────────────────────────
 function zombieHitBarricade(zombie, dt) {
+  if (zombie.ignoreBarricades) return false;
   for (const b of barricades) {
     const d = zombie.mesh.position.distanceTo(b.mesh.position);
     if (d < 2.5) {
@@ -4314,6 +4628,50 @@ function spawnSupplyDrop() {
   playSfx("supply_drop", 0.9);
 }
 
+/** Spawn a supply drop at a specific position (for dynamic events). */
+function spawnSupplyDropAt(position, type = "standard") {
+  if (gameState !== "PLAYING" || gameOver) return;
+  const dropX = position.x;
+  const dropZ = position.z;
+  const dropY = position.y || 45;
+
+  const crate = new THREE.Group();
+  const color = type === "weapon_crate" ? 0x2244aa : 0x228822;
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(1.2, 1.0, 1.2),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.7 }),
+  );
+  const tape1 = new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.15, 0.25), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  const tape2 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.15, 1.25), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  tape1.position.y = 0.1;
+  tape2.position.y = -0.1;
+  const chute = new THREE.Mesh(
+    new THREE.ConeGeometry(2.5, 1.2, 8),
+    new THREE.MeshStandardMaterial({ color: type === "weapon_crate" ? 0x3366ff : 0xff6600, side: THREE.DoubleSide }),
+  );
+  chute.position.y = 4;
+  const lines = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, 4, 4),
+    new THREE.MeshBasicMaterial({ color: 0xcccccc }),
+  );
+  lines.position.y = 2;
+  crate.add(box, tape1, tape2, chute, lines);
+  crate.position.set(dropX, dropY, dropZ);
+  crate.castShadow = true;
+  scene.add(crate);
+
+  const supplyDrop = {
+    mesh: crate,
+    position: new THREE.Vector3(dropX, dropY, dropZ),
+    velocityY: -6,
+    landed: false,
+    opened: false,
+    height: 1.0,
+    dropType: type,
+  };
+  supplyDrops.push(supplyDrop);
+}
+
 function updateSupplyDrops(dt) {
   for (let i = supplyDrops.length - 1; i >= 0; i--) {
     const drop = supplyDrops[i];
@@ -4365,6 +4723,25 @@ function openSupplyDrop(drop) {
   playSfx("ui_click", 1.2);
   drop.opened = true;
   scene.remove(drop.mesh);
+
+  if (drop.dropType === "weapon_crate") {
+    // Weapon crate: random weapon ammo + upgrade materials
+    const ammoType = Math.floor(Math.random() * player.weapons.length);
+    const ammoGain = Math.floor(getWeaponReserveCap(player.weapons[ammoType]) * 0.3);
+    player.weapons[ammoType].reserve = Math.min(
+      player.weapons[ammoType].reserve + ammoGain,
+      getWeaponReserveCap(player.weapons[ammoType]),
+    );
+    // Bonus materials
+    materials.scrap += 3 + Math.floor(Math.random() * 4);
+    materials.metal += 2 + Math.floor(Math.random() * 3);
+    materials.chemicals += 1 + Math.floor(Math.random() * 2);
+    grenadeCount = Math.min(grenadeCount + 1, 6);
+    topCenterAlertEl.textContent = "📦 WEAPON CRATE OPENED!";
+    alertTimer = 2.5;
+    messageEl.textContent = `Got ${ammoGain} ${player.weapons[ammoType].name} ammo, +scrap/metal/chem, +1 grenade!`;
+    return;
+  }
 
   // Give rewards
   const ammoType = Math.random() < 0.5 ? 0 : Math.random() < 0.7 ? 1 : 2;
@@ -4487,11 +4864,52 @@ function animate(nowMs) {
   const dt = Math.min(0.05, now - (animate.lastTime || now));
   animate.lastTime = now;
 
-  if (gameState === "PLAYING" && !gameOver && !upgradeBenchOpen) {
+  if (gameState === "PLAYING" && !gameOver && !upgradeBenchOpen && !inventoryOpen) {
 
     gameTime += dt;
     spawnTimer -= dt;
     updateWaveDirector(dt);
+
+    // Dynamic events
+    const eventResult = updateEventDirector(eventDirector, dt, player, zombies, scene, terrainHeight);
+    if (eventResult && eventResult.type === "trigger") {
+      const exec = executeEvent(eventResult.eventType, eventDirector, player, scene, terrainHeight, addZombie, (pos, type) => {
+        if (type === "weapon_crate") spawnSupplyDropAt(pos);
+      });
+      if (exec && exec.alert) {
+        topCenterAlertEl.textContent = exec.alert;
+        alertTimer = exec.alertTimer || 3;
+      }
+    } else if (eventResult && eventResult.type === "survivor_end") {
+      if (eventResult.success) {
+        score += 300;
+        skillPoints += 1;
+        grenadeCount = Math.min(grenadeCount + 1, 6);
+        topCenterAlertEl.textContent = "★ SURVIVOR SAVED! +300 pts +1 SP";
+        alertTimer = 3;
+        messageEl.textContent = "Survivor rescued! Well done.";
+      } else {
+        topCenterAlertEl.textContent = "💀 Survivor didn't make it...";
+        alertTimer = 2.5;
+      }
+    }
+
+    // Mission system
+    const missionResult = updateMissions(missionGenerator, dt, player, materials, zombies, terrainHeight);
+    if (missionResult && missionResult.completed) {
+      for (const mission of missionResult.completed) {
+        const rewards = getMissionRewards(mission);
+        score += rewards.score;
+        addSkillXP(rewards.xp);
+        skillPoints += rewards.skillPoints || 0;
+        for (const [mat, amt] of Object.entries(rewards.materials)) {
+          materials[mat] = (materials[mat] || 0) + amt;
+        }
+        topCenterAlertEl.textContent = `★ MISSION COMPLETE: ${mission.title}`;
+        alertTimer = 3;
+        messageEl.textContent = `Completed "${mission.title}"! +${rewards.score} pts, +${rewards.xp} XP`;
+      }
+    }
 
     if (player.reloadTimer > 0) {
       player.reloadTimer -= dt;
@@ -4508,10 +4926,16 @@ function animate(nowMs) {
     }
 
     player.shootCooldown = Math.max(0, player.shootCooldown - dt);
-    movePlayer(dt);
-    sun.position.x = player.position.x + 30;
-    sun.position.z = player.position.z - 10;
-    preventTreeCollision();
+    if (activeVehicle) {
+      updateVehicles(dt);
+      sun.position.x = activeVehicle.mesh.position.x + 30;
+      sun.position.z = activeVehicle.mesh.position.z - 10;
+    } else {
+      movePlayer(dt);
+      sun.position.x = player.position.x + 30;
+      sun.position.z = player.position.z - 10;
+      preventTreeCollision();
+    }
     ensureChunks();
     updateZombies(dt);
     updateTeammates(dt);
@@ -4593,6 +5017,13 @@ window.addEventListener("mousemove", (e) => {
 
 window.addEventListener("keydown", (e) => {
   keys.add(e.code);
+  if (activeVehicle) {
+    if (e.code === "KeyW") vehicleInput.forward = true;
+    if (e.code === "KeyS") vehicleInput.backward = true;
+    if (e.code === "KeyA") vehicleInput.left = true;
+    if (e.code === "KeyD") vehicleInput.right = true;
+    if (e.code === "Space") vehicleInput.backward = true; // Brake
+  }
   if (e.code === "KeyR" && gameState === "PLAYING") reload();
   if (e.code === "KeyQ" && gameState === "PLAYING") doSwapPlayerWeapon();
   if (e.code === "KeyU" && gameState === "PLAYING" && !gameOver && !e.repeat) {
@@ -4629,7 +5060,18 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyF" && gameOver) window.location.reload();
   if (e.code === "KeyG" && gameState === "PLAYING" && !gameOver) throwGrenade();
   if (e.code === "KeyV" && gameState === "PLAYING" && !gameOver) throwNoiseMaker();
-  if (e.code === "KeyF" && gameState === "PLAYING" && !gameOver && !e.repeat) performMelee();
+  if (e.code === "KeyF" && gameState === "PLAYING" && !gameOver && !e.repeat) {
+    if (activeVehicle) exitVehicle();
+    else {
+      const nearVehicle = findNearestVehicle();
+      if (nearVehicle) enterVehicle(nearVehicle);
+      else performMelee();
+    }
+  }
+  if (e.code === "KeyH" && gameState === "PLAYING" && !gameOver && !e.repeat && activeVehicle) {
+    playSpatialSfx("noise_maker", activeVehicle.mesh.position, 0.6);
+    messageEl.textContent = "HONK!";
+  }
   if (e.code === "KeyB" && gameState === "PLAYING" && !gameOver && !e.repeat) buildBarricade();
   if (e.code === "KeyN" && gameState === "PLAYING" && !gameOver && !e.repeat) switchBuildType();
   if (e.code === "F6" && gameState === "PLAYING" && !gameOver) {
@@ -4647,10 +5089,10 @@ window.addEventListener("keydown", (e) => {
     if (e.code === "Digit6") { e.preventDefault(); doSwitchToWeapon(5); }
     if (e.code === "Digit7") { e.preventDefault(); doSwitchToWeapon(6); }
   }
-  if (e.code === "KeyU" && gameState === "PLAYING" && !gameOver && !e.repeat) {
+  if (e.code === "Tab" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     e.preventDefault();
-    if (upgradeBenchOpen) closeUpgradeBench();
-    else openUpgradeBench();
+    if (inventoryOpen) closeInventory();
+    else openInventory();
   }
   if (e.code === "KeyC" && gameState === "PLAYING" && !gameOver) {
     isCrouching = !isCrouching;
@@ -4666,7 +5108,15 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-window.addEventListener("keyup", (e) => keys.delete(e.code));
+window.addEventListener("keyup", (e) => {
+  keys.delete(e.code);
+  if (activeVehicle) {
+    if (e.code === "KeyW") vehicleInput.forward = false;
+    if (e.code === "KeyS") vehicleInput.backward = false;
+    if (e.code === "KeyA") vehicleInput.left = false;
+    if (e.code === "KeyD") vehicleInput.right = false;
+  }
+});
 window.addEventListener("blur", clearInputState);
 
 window.addEventListener("resize", () => {
@@ -4709,6 +5159,10 @@ window.addEventListener("resize", () => {
   for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
   for (let i = 0; i < 3; i += 1) {
     teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplate, remingtonTemplate, pistolTemplate));
+  }
+  // Spawn vehicles on Outbreak City and Ruins maps
+  if (activeMapConfig.id === "outbreak_city" || activeMapConfig.id === "ruins") {
+    spawnVehiclesForMap();
   }
   syncPlayerAmmoFields(player);
   updateAudioButtonLabel();
