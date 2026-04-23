@@ -3364,7 +3364,6 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
     addScreenShake(isHeadshot ? 0.18 : 0.12);
     triggerHitStop(isHeadshot ? 0.06 : 0.045);
   }
-  }
   if (zombie.hp <= 0) {
     const pos = zombie.mesh.position.clone();
     const wasBoss = zombie.isBoss;
