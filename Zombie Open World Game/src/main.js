@@ -39,6 +39,7 @@ import treeBarkBumpUrl from "./assets/textures/tree_bark_bump.jpg";
 import zombieClothDiffuseUrl from "./assets/textures/zombie_cloth_diffuse.jpg";
 import zombieSkinDetailUrl from "./assets/textures/zombie_skin_detail.jpg";
 import zombieFleshRottenRedUrl from "./assets/textures/zombie_flesh_rotten_red_1024.png";
+import grassDiffuseUrl from "./assets/textures/grass_diffuse.jpg";
 const ak47ModelUrl = new URL("../textured_ak47_-_free_for_download.glb", import.meta.url).href;
 const remingtonModelUrl = new URL("../call_of_duty_black_ops_cold_war_-_gallo_sa12.glb", import.meta.url).href;
 /** Textured handgun GLB (Webaverse sample asset — https://github.com/webaverse/pistol ) */
@@ -345,7 +346,7 @@ function getV3() {
 hemi.color.setHex(activeMapConfig.hemiSky);
 hemi.groundColor.setHex(activeMapConfig.hemiGround);
 
-function createGroundTextureForMap(map) {
+function createGroundTextureForMap(map, grassPhotoTex = null) {
   const size = 128;
   const textureCanvas = document.createElement("canvas");
   textureCanvas.width = size;
@@ -377,6 +378,20 @@ function createGroundTextureForMap(map) {
     const h = 1 + Math.random() * 2;
     ctx.fillStyle = `rgba(${tr}, ${tg}, ${tb}, ${0.08 + Math.random() * 0.07})`;
     ctx.fillRect(x, y, w, h);
+  }
+
+  if (grassPhotoTex && grassPhotoTex.image && grassPhotoTex.image.complete && grassPhotoTex.image.width) {
+    ctx.save();
+    ctx.globalAlpha = 0.42;
+    ctx.globalCompositeOperation = "multiply";
+    const pat = ctx.createPattern(grassPhotoTex.image, "repeat");
+    if (pat) {
+      const scale = 0.22;
+      ctx.scale(scale, scale);
+      ctx.fillStyle = pat;
+      ctx.fillRect(0, 0, size / scale, size / scale);
+    }
+    ctx.restore();
   }
 
   const texture = new THREE.CanvasTexture(textureCanvas);
@@ -574,12 +589,16 @@ let screenShakeTime = Math.random() * 1000;
 let isCrouching = false;
 let isADS = false;
 let grenadeCount = 3;
+let molotovCount = 0;
+let landMineCount = 0;
+let spikeTrapCount = 0;
 let isNight = false;
 let hordeNightActive = false;
 let hordeNightTimer = 0;
 let bossAlive = false;
 const grenades = [];
-const molotovs = [];
+const molotovProjectiles = [];
+const molotovFires = [];
 const landMines = [];
 const spikeTraps = [];
 const particles = [];
@@ -1198,6 +1217,9 @@ function saveRun() {
     skillPoints,
     skillXp,
     grenadeCount,
+    molotovCount,
+    landMineCount,
+    spikeTrapCount,
     noiseMakerCount,
     activeMapId: activeMapConfig.id,
     weapons: player.weapons.map(w => ({ name: w.name, ammo: w.ammo, reserve: w.reserve })),
@@ -1230,6 +1252,9 @@ function loadRun() {
     skillPoints = save.skillPoints || 0;
     skillXp = save.skillXp || 0;
     grenadeCount = save.grenadeCount || 3;
+    molotovCount = save.molotovCount || 0;
+    landMineCount = save.landMineCount || 0;
+    spikeTrapCount = save.spikeTrapCount || 0;
     noiseMakerCount = save.noiseMakerCount || 2;
     if (save.weapons) {
       for (let i = 0; i < Math.min(save.weapons.length, player.weapons.length); i++) {
@@ -1266,6 +1291,23 @@ const groundMaterial = new THREE.MeshStandardMaterial({
   roughness: 0.95,
   metalness: 0,
 });
+
+const grassGroundDiffuse = textureLoader.load(grassDiffuseUrl, (tex) => {
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(6, 6);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  if (!activeMapConfig.useCityGroundTexture) {
+    if (groundDiffuse) groundDiffuse.dispose();
+    groundDiffuse = createGroundTextureForMap(activeMapConfig, tex);
+    groundMaterial.map = groundDiffuse;
+    groundMaterial.needsUpdate = true;
+  }
+});
+grassGroundDiffuse.wrapS = THREE.RepeatWrapping;
+grassGroundDiffuse.wrapT = THREE.RepeatWrapping;
+grassGroundDiffuse.repeat.set(6, 6);
+grassGroundDiffuse.colorSpace = THREE.SRGBColorSpace;
 
 const zombieSkinMaterial = new THREE.MeshStandardMaterial({
   map: zombieFleshRottenRed,
@@ -1314,9 +1356,9 @@ for (const g of [gBox1x1x1, gSphere1, gSphereLow, gCylinder1]) {
 const spitterClothMat = new THREE.MeshStandardMaterial({ color: 0x4a6b3a, roughness: 0.75 });
 const spitterSkinMat = new THREE.MeshStandardMaterial({ color: 0x8db88a, roughness: 0.68, bumpMap: zombieSkinDetail, bumpScale: 0.03 });
 const hunterClothMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.85 });
-const hunterSkinMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.7 });
+const hunterSkinMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.7, bumpMap: zombieSkinDetail, bumpScale: 0.028 });
 const chargerClothMat = new THREE.MeshStandardMaterial({ color: 0x5a3a2a, roughness: 0.8 });
-const chargerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a6a5a, roughness: 0.65 });
+const chargerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a6a5a, roughness: 0.65, bumpMap: zombieSkinDetail, bumpScale: 0.025 });
 const acidSacMat = new THREE.MeshStandardMaterial({ color: 0x88cc44, emissive: 0x446622, emissiveIntensity: 0.3 });
 
 /** New special infected materials */
@@ -1324,10 +1366,10 @@ const juggernautClothMat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, rou
 const juggernautSkinMat = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.7, bumpMap: zombieSkinDetail, bumpScale: 0.04 });
 const juggernautArmorMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.7 });
 const boomerClothMat = new THREE.MeshStandardMaterial({ color: 0x5a6b2a, roughness: 0.85 });
-const boomerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a9a4a, roughness: 0.7 });
+const boomerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a9a4a, roughness: 0.7, bumpMap: zombieSkinDetail, bumpScale: 0.022 });
 const boomerBloatMat = new THREE.MeshStandardMaterial({ color: 0xaacc44, emissive: 0x668822, emissiveIntensity: 0.25, transparent: true, opacity: 0.85 });
 const screamerClothMat = new THREE.MeshStandardMaterial({ color: 0x4a3a5a, roughness: 0.8 });
-const screamerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a7aaa, roughness: 0.65 });
+const screamerSkinMat = new THREE.MeshStandardMaterial({ color: 0x8a7aaa, roughness: 0.65, bumpMap: zombieSkinDetail, bumpScale: 0.024 });
 
 /** Shared eye materials (prevents per-zombie material leaks). */
 const eyeMaterials = {
@@ -1413,7 +1455,10 @@ function applyActiveMapVisuals() {
       cityStreetDiffuse = null;
     }
     if (groundDiffuse) groundDiffuse.dispose();
-    groundDiffuse = createGroundTextureForMap(activeMapConfig);
+    groundDiffuse = createGroundTextureForMap(
+      activeMapConfig,
+      grassGroundDiffuse?.image?.complete ? grassGroundDiffuse : null,
+    );
     groundMaterial.map = groundDiffuse;
     groundMaterial.normalMap = null;
     groundMaterial.roughness = 0.95;
@@ -2409,6 +2454,9 @@ function resetWorldForNewMap() {
   crosshairSpread = 0;
   crosshairFireImpulse = 0;
   grenadeCount = 3;
+  molotovCount = 0;
+  landMineCount = 0;
+  spikeTrapCount = 0;
   noiseMakerCount = 2;
   isNight = false;
   hordeNightActive = false;
@@ -2427,11 +2475,13 @@ function resetWorldForNewMap() {
     g.mesh.material?.dispose();
   }
   grenades.length = 0;
-  for (const m of molotovs) { scene.remove(m.mesh); disposeOwnedObject3D(m.mesh); }
-  molotovs.length = 0;
+  for (const mp of molotovProjectiles) { scene.remove(mp.mesh); disposeOwnedObject3D(mp.mesh); }
+  molotovProjectiles.length = 0;
+  for (const f of molotovFires) { scene.remove(f.mesh); disposeOwnedObject3D(f.mesh); }
+  molotovFires.length = 0;
   for (const m of landMines) { scene.remove(m.mesh); disposeOwnedObject3D(m.mesh); }
   landMines.length = 0;
-  for (const t of spikeTraps) { scene.remove(t.mesh); disposeOwnedObject3D(t.mesh); }
+  for (const s of spikeTraps) { scene.remove(s.mesh); disposeOwnedObject3D(s.mesh); }
   spikeTraps.length = 0;
   for (const p of particles) {
     scene.remove(p.mesh);
@@ -4079,7 +4129,7 @@ function buildBarricade() {
 
   const hp = isWood ? 120 : 350;
   barricades.push({ mesh: group, hp, maxHp: hp, type: buildType });
-  visionBlockers.push(panel);
+  visionBlockers.push(panel, leftPost, rightPost);
   messageEl.textContent = `${buildType.charAt(0).toUpperCase() + buildType.slice(1)} barricade built!`;
   playSfx("ui_click", 1.2);
 }
@@ -4089,9 +4139,10 @@ function updateBarricades(dt) {
     const b = barricades[i];
     if (b.hp <= 0) {
       scene.remove(b.mesh);
-      // Remove from vision blockers
-      const idx = visionBlockers.indexOf(b.mesh.children[0]);
-      if (idx >= 0) visionBlockers.splice(idx, 1);
+      for (const ch of b.mesh.children) {
+        const idx = visionBlockers.indexOf(ch);
+        if (idx >= 0) visionBlockers.splice(idx, 1);
+      }
       barricades.splice(i, 1);
       messageEl.textContent = "Barricade destroyed!";
     }
@@ -4125,12 +4176,32 @@ function closeUpgradeBench() {
   if (!gameOver) canvas.requestPointerLock();
 }
 
+const inventoryCraftHooks = {
+  getWeaponReserveCap,
+  syncPlayerAmmoFields,
+  onCrafted(recipeId) {
+    if (recipeId === "molotov") {
+      molotovCount = Math.min(molotovCount + 1, 8);
+      messageEl.textContent = `Crafted molotov! (${molotovCount} ready — press G)`;
+    } else if (recipeId === "land_mine") {
+      landMineCount = Math.min(landMineCount + 1, 6);
+      messageEl.textContent = `Crafted land mine! (${landMineCount} — press G to arm & place)`;
+    } else if (recipeId === "spike_trap") {
+      spikeTrapCount = Math.min(spikeTrapCount + 1, 8);
+      messageEl.textContent = `Crafted spike trap! (${spikeTrapCount} — press G to place)`;
+    } else if (recipeId === "ammo_pack") {
+      messageEl.textContent = "Ammo pack crafted — reserve topped up.";
+    }
+    updateHUDMaterials();
+  },
+};
+
 function openInventory() {
   if (gameState !== "PLAYING" || gameOver) return;
   paused = true;
   inventoryOpen = true;
   if (document.pointerLockElement === canvas) document.exitPointerLock();
-  showInventory(inventoryUI, materials, player);
+  showInventory(inventoryUI, materials, player, inventoryCraftHooks);
 }
 
 function closeInventory() {
@@ -4144,7 +4215,8 @@ function updateHUDMaterials() {
   if (extraMetaEl) {
     const m = materials;
     const materialStr = `S:${m.scrap} W:${m.wood} M:${m.metal} C:${m.cloth} Ch:${m.chemicals}`;
-    extraMetaEl.textContent = `💣 ${grenadeCount} | 📢 ${noiseMakerCount} | ${materialStr} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}${buildMode ? ` | [BUILD:${buildType.toUpperCase()}]` : ""}`;
+    const throwStr = `🔥${molotovCount} 💥${grenadeCount} ⛏${landMineCount} 🗡${spikeTrapCount}`;
+    extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | ${materialStr} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}${buildMode ? ` | [BUILD:${buildType.toUpperCase()}]` : ""}`;
   }
 }
 
@@ -4401,7 +4473,10 @@ function updateHud(dt) {
   const wpnNum = `[${player.activeWeapon + 1}]`;
   const wpnUpg = activeWpn.upgrades && Object.keys(activeWpn.upgrades).length > 0 ? " +" : "";
   statsMetaEl.textContent = `Map: ${activeMapConfig.name} | ${activeWpn.name}${wpnUpg} ${wpnNum} | ${ammoLabel} | Kills: ${player.kills} | Zombies: ${zombies.length} | Team: ${teammates.length + 1}`;
-  if (extraMetaEl) extraMetaEl.textContent = `💣 ${grenadeCount} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}`;
+  if (extraMetaEl) {
+    const throwStr = `🔥${molotovCount} 💥${grenadeCount} ⛏${landMineCount} 🗡${spikeTrapCount}`;
+    extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}`;
+  }
   if (skillMetaEl) {
     const activeSkills = Object.values(skills)
       .filter((s) => s.level > 0)
@@ -4635,7 +4710,15 @@ function createExplosion(position, radius, damage) {
   }
 }
 
-// ─── Grenades ─────────────────────────────────────────────────────────────────
+// ─── Grenades / crafted throwables ────────────────────────────────────────────
+function getThrowDirection() {
+  return new THREE.Vector3(
+    -Math.sin(player.yaw) * Math.cos(player.pitch),
+    Math.sin(player.pitch) + 0.3,
+    -Math.cos(player.yaw) * Math.cos(player.pitch),
+  ).normalize();
+}
+
 function throwGrenade() {
   if (!pointerLocked || gameOver || grenadeCount <= 0) return;
   grenadeCount -= 1;
@@ -4655,14 +4738,221 @@ function throwGrenade() {
   grenadeMesh.add(pin);
   const origin = player.position.clone();
   origin.y -= 0.15;
-  const direction = new THREE.Vector3(
-    -Math.sin(player.yaw) * Math.cos(player.pitch),
-    Math.sin(player.pitch) + 0.3,
-    -Math.cos(player.yaw) * Math.cos(player.pitch),
-  ).normalize();
+  const direction = getThrowDirection();
   grenadeMesh.position.copy(origin);
   scene.add(grenadeMesh);
   grenades.push({ mesh: grenadeMesh, velocity: direction.clone().multiplyScalar(16), fuse: 2.4 });
+  updateHUDMaterials();
+}
+
+function throwMolotov() {
+  if (!pointerLocked || gameOver || molotovCount <= 0) return;
+  molotovCount -= 1;
+  playSfx("grenade_throw", 0.95);
+  messageEl.textContent = `Molotov thrown! (${molotovCount} left)`;
+  const bottle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.045, 0.055, 0.22, 8),
+    new THREE.MeshStandardMaterial({ color: 0x448822, roughness: 0.35, metalness: 0.1 }),
+  );
+  bottle.rotation.z = Math.PI / 2;
+  bottle.castShadow = true;
+  const wick = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.012, 0.012, 0.06, 6),
+    new THREE.MeshStandardMaterial({ color: 0x221100, roughness: 0.9 }),
+  );
+  wick.position.set(0, 0.14, 0);
+  bottle.add(wick);
+  const origin = player.position.clone();
+  origin.y -= 0.12;
+  bottle.position.copy(origin);
+  const direction = getThrowDirection();
+  scene.add(bottle);
+  molotovProjectiles.push({ mesh: bottle, velocity: direction.clone().multiplyScalar(14), fuse: 3.2 });
+  updateHUDMaterials();
+}
+
+function startMolotovFireAt(pos) {
+  const y = terrainHeight(pos.x, pos.z) + 0.07;
+  const fireMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.0, 2.35, 0.04, 14),
+    new THREE.MeshBasicMaterial({ color: 0xff7722, transparent: true, opacity: 0.62 }),
+  );
+  fireMesh.rotation.x = -Math.PI / 2;
+  fireMesh.position.set(pos.x, y, pos.z);
+  scene.add(fireMesh);
+  molotovFires.push({
+    mesh: fireMesh,
+    life: 6,
+    maxLife: 6,
+    radius: 2.35,
+    damagePerSecond: 42,
+  });
+  playSpatialSfx("explosion", new THREE.Vector3(pos.x, y, pos.z), 0.35);
+}
+
+function updateMolotovProjectiles(dt) {
+  for (let i = molotovProjectiles.length - 1; i >= 0; i--) {
+    const m = molotovProjectiles[i];
+    m.fuse -= dt;
+    m.velocity.y += settings.gravity * 0.5 * dt;
+    m.mesh.position.addScaledVector(m.velocity, dt);
+    m.mesh.rotation.x += dt * 8;
+    const floor = terrainHeight(m.mesh.position.x, m.mesh.position.z) + 0.08;
+    let hit = m.fuse <= 0;
+    if (m.mesh.position.y < floor) {
+      m.mesh.position.y = floor;
+      m.velocity.y = Math.abs(m.velocity.y) * 0.22;
+      m.velocity.x *= 0.55;
+      m.velocity.z *= 0.55;
+      hit = true;
+    }
+    if (hit) {
+      const pos = m.mesh.position.clone();
+      scene.remove(m.mesh);
+      disposeOwnedObject3D(m.mesh);
+      molotovProjectiles.splice(i, 1);
+      startMolotovFireAt(pos);
+    }
+  }
+}
+
+function updateMolotovFires(dt) {
+  for (let fi = molotovFires.length - 1; fi >= 0; fi--) {
+    const f = molotovFires[fi];
+    f.life -= dt;
+    const t = Math.max(0, f.life / f.maxLife);
+    f.mesh.material.opacity = 0.2 + t * 0.5;
+    f.mesh.scale.setScalar(0.88 + (1 - t) * 0.12);
+    if (f.life <= 0) {
+      scene.remove(f.mesh);
+      f.mesh.geometry.dispose();
+      f.mesh.material.dispose();
+      molotovFires.splice(fi, 1);
+      continue;
+    }
+    if (gameState === "PLAYING" && !gameOver) {
+      const fp = f.mesh.position;
+      const d = fp.distanceTo(player.position);
+      if (d < f.radius) {
+        player.hp = Math.max(0, player.hp - f.damagePerSecond * dt * 0.55);
+        player.damageFlash = 0.45;
+        if (player.hp <= 0 && !gameOver) {
+          player.hp = 0;
+          gameOver = true;
+          messageEl.textContent = "Burned by fire...";
+          if (document.pointerLockElement === canvas) document.exitPointerLock();
+          setMenuMode("death");
+        }
+      }
+    }
+    for (let zi = zombies.length - 1; zi >= 0; zi--) {
+      const zp = zombies[zi].mesh.position;
+      if (fp.distanceToSquared(zp) < f.radius * f.radius) {
+        applyZombieDamage(zi, f.damagePerSecond * dt * 0.9);
+      }
+    }
+  }
+}
+
+function placeLandMine() {
+  if (!pointerLocked || gameOver || landMineCount <= 0) return;
+  landMineCount -= 1;
+  playSfx("ui_click", 1.1);
+  const dir = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const pos = player.position.clone().addScaledVector(dir, 2.2);
+  pos.y = terrainHeight(pos.x, pos.z);
+  const mine = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.22, 0.28, 0.08, 10),
+    new THREE.MeshStandardMaterial({ color: 0x3a3a2a, roughness: 0.75, metalness: 0.35 }),
+  );
+  mine.position.set(pos.x, pos.y + 0.05, pos.z);
+  mine.rotation.y = player.yaw;
+  mine.castShadow = true;
+  scene.add(mine);
+  landMines.push({ mesh: mine, triggerRadius: 2.8, armed: true });
+  messageEl.textContent = `Land mine armed! (${landMineCount} left)`;
+  updateHUDMaterials();
+}
+
+function updateLandMines() {
+  for (let mi = landMines.length - 1; mi >= 0; mi--) {
+    const mine = landMines[mi];
+    if (!mine.armed) continue;
+    for (const z of zombies) {
+      if (z.mesh.position.distanceToSquared(mine.mesh.position) < mine.triggerRadius * mine.triggerRadius) {
+        const pos = mine.mesh.position.clone();
+        scene.remove(mine.mesh);
+        mine.mesh.geometry.dispose();
+        mine.mesh.material.dispose();
+        landMines.splice(mi, 1);
+        createExplosion(pos, 6.2, 78);
+        playSpatialSfx("explosion", pos, 0.85);
+        topCenterAlertEl.textContent = "💥 Land mine!";
+        alertTimer = 1.8;
+        break;
+      }
+    }
+  }
+}
+
+function updateSpikeTraps(dt) {
+  for (const trap of spikeTraps) {
+    for (let zi = zombies.length - 1; zi >= 0; zi--) {
+      const z = zombies[zi];
+      const dx = z.mesh.position.x - trap.mesh.position.x;
+      const dz = z.mesh.position.z - trap.mesh.position.z;
+      if (dx * dx + dz * dz < trap.radius * trap.radius) {
+        applyZombieDamage(zi, trap.dps * dt);
+      }
+    }
+  }
+}
+
+function placeSpikeTrap() {
+  if (!pointerLocked || gameOver || spikeTrapCount <= 0) return;
+  spikeTrapCount -= 1;
+  playSfx("ui_click", 1.05);
+  const dir = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const pos = player.position.clone().addScaledVector(dir, 2.0);
+  pos.y = terrainHeight(pos.x, pos.z);
+  const group = new THREE.Group();
+  const base = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.9, 1.0, 0.06, 12),
+    new THREE.MeshStandardMaterial({ color: 0x4a3a28, roughness: 0.88 }),
+  );
+  base.position.y = 0.04;
+  base.castShadow = true;
+  group.add(base);
+  const spikeMat = new THREE.MeshStandardMaterial({ color: 0x8899aa, metalness: 0.6, roughness: 0.45 });
+  for (let k = 0; k < 9; k++) {
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.28, 6), spikeMat);
+    const a = (k / 9) * Math.PI * 2;
+    spike.position.set(Math.cos(a) * 0.55, 0.22, Math.sin(a) * 0.55);
+    group.add(spike);
+  }
+  group.position.set(pos.x, pos.y, pos.z);
+  group.rotation.y = player.yaw;
+  scene.add(group);
+  spikeTraps.push({ mesh: group, radius: 1.15, dps: 52 });
+  messageEl.textContent = `Spike trap placed! (${spikeTrapCount} left)`;
+  updateHUDMaterials();
+}
+
+function useThrowableOrTrap() {
+  if (!pointerLocked || gameOver) return;
+  if (molotovCount > 0) {
+    throwMolotov();
+    return;
+  }
+  if (landMineCount > 0) {
+    placeLandMine();
+    return;
+  }
+  if (spikeTrapCount > 0) {
+    placeSpikeTrap();
+    return;
+  }
+  throwGrenade();
 }
 
 function updateGrenades(dt) {
@@ -4686,158 +4976,6 @@ function updateGrenades(dt) {
       disposeOwnedObject3D(g.mesh);
       grenades.splice(i, 1);
       createExplosion(pos, 8.5, 95);
-    }
-  }
-}
-
-// ─── Molotov Cocktails ───────────────────────────────────────────────────────
-function throwMolotov() {
-  if (!pointerLocked || gameOver || !(player.inventory?.molotov > 0)) return;
-  player.inventory.molotov -= 1;
-  playSfx("grenade_throw", 0.9);
-  messageEl.textContent = `Molotov thrown! (${player.inventory.molotov} left)`;
-  const mesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.06, 0.08, 0.24, 8),
-    new THREE.MeshStandardMaterial({ color: 0x3a2a18, roughness: 0.75 }),
-  );
-  const wick = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.008, 0.008, 0.08, 4),
-    new THREE.MeshBasicMaterial({ color: 0xff4400 }),
-  );
-  wick.position.y = 0.14;
-  mesh.add(wick);
-  const origin = player.position.clone();
-  origin.y -= 0.15;
-  const direction = new THREE.Vector3(
-    -Math.sin(player.yaw) * Math.cos(player.pitch),
-    Math.sin(player.pitch) + 0.28,
-    -Math.cos(player.yaw) * Math.cos(player.pitch),
-  ).normalize();
-  mesh.position.copy(origin);
-  scene.add(mesh);
-  molotovs.push({ mesh, velocity: direction.clone().multiplyScalar(14), fuse: 1.6 });
-}
-
-function updateMolotovs(dt) {
-  for (let i = molotovs.length - 1; i >= 0; i--) {
-    const m = molotovs[i];
-    m.fuse -= dt;
-    m.velocity.y += settings.gravity * 0.48 * dt;
-    m.mesh.position.addScaledVector(m.velocity, dt);
-    m.mesh.rotation.z += dt * 12;
-    const floor = terrainHeight(m.mesh.position.x, m.mesh.position.z) + 0.05;
-    if (m.mesh.position.y < floor) {
-      m.mesh.position.y = floor;
-      m.velocity.set(0, 0, 0);
-    }
-    if (m.fuse <= 0) {
-      const pos = m.mesh.position.clone();
-      scene.remove(m.mesh);
-      disposeOwnedObject3D(m.mesh);
-      molotovs.splice(i, 1);
-      // Fire pool instead of explosion
-      const fireGeo = new THREE.CircleGeometry(4.5, 20);
-      const fireMat = new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.6 });
-      const fireMesh = new THREE.Mesh(fireGeo, fireMat);
-      fireMesh.rotation.x = -Math.PI / 2;
-      fireMesh.position.set(pos.x, terrainHeight(pos.x, pos.z) + 0.06, pos.z);
-      scene.add(fireMesh);
-      acidPuddles.push({ mesh: fireMesh, life: 6, maxLife: 6, radius: 4.5, damagePerSecond: 22, isFire: true });
-      playSfx("explosion", 0.6);
-    }
-  }
-}
-
-// ─── Land Mines ──────────────────────────────────────────────────────────────
-function placeLandMine() {
-  if (!pointerLocked || gameOver || !(player.inventory?.landMine > 0)) return;
-  player.inventory.landMine -= 1;
-  playSfx("ui_click", 1);
-  messageEl.textContent = `Land mine placed! (${player.inventory.landMine} left)`;
-  const mesh = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.18, 0.2, 0.08, 10),
-    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.7 }),
-  );
-  const pin = new THREE.Mesh(
-    new THREE.SphereGeometry(0.04, 6, 6),
-    new THREE.MeshBasicMaterial({ color: 0xcc0000 }),
-  );
-  pin.position.y = 0.06;
-  mesh.add(body, pin);
-  const pos = player.position.clone();
-  pos.y = terrainHeight(pos.x, pos.z) + 0.04;
-  mesh.position.copy(pos);
-  scene.add(mesh);
-  landMines.push({ mesh, position: pos.clone(), armed: true, radius: 2.5, damage: 75 });
-}
-
-function updateLandMines(dt) {
-  for (let i = landMines.length - 1; i >= 0; i--) {
-    const mine = landMines[i];
-    if (!mine.armed) continue;
-    for (const z of zombies) {
-      if (z.mesh.position.distanceTo(mine.position) < mine.radius) {
-        mine.armed = false;
-        scene.remove(mine.mesh);
-        disposeOwnedObject3D(mine.mesh);
-        createExplosion(mine.position, 5.5, mine.damage);
-        landMines.splice(i, 1);
-        break;
-      }
-    }
-  }
-}
-
-// ─── Spike Traps ─────────────────────────────────────────────────────────────
-function placeSpikeTrap() {
-  if (!pointerLocked || gameOver || !(player.inventory?.spikeTrap > 0)) return;
-  player.inventory.spikeTrap -= 1;
-  playSfx("ui_click", 1);
-  messageEl.textContent = `Spike trap placed! (${player.inventory.spikeTrap} left)`;
-  const mesh = new THREE.Group();
-  const plate = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6, 0.06, 1.6),
-    new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.85 }),
-  );
-  const spikeMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.3, metalness: 0.8 });
-  for (let sx = -1; sx <= 1; sx += 1) {
-    for (let sz = -1; sz <= 1; sz += 1) {
-      const spike = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.28, 5), spikeMat);
-      spike.position.set(sx * 0.45, 0.16, sz * 0.45);
-      mesh.add(spike);
-    }
-  }
-  mesh.add(plate);
-  const pos = player.position.clone();
-  pos.y = terrainHeight(pos.x, pos.z) + 0.03;
-  mesh.position.copy(pos);
-  scene.add(mesh);
-  spikeTraps.push({ mesh, position: pos.clone(), radius: 1.2, damage: 35, cooldown: 0 });
-}
-
-function updateSpikeTraps(dt) {
-  for (let i = spikeTraps.length - 1; i >= 0; i--) {
-    const trap = spikeTraps[i];
-    trap.cooldown = Math.max(0, trap.cooldown - dt);
-    if (trap.cooldown > 0) continue;
-    for (const z of zombies) {
-      if (z.mesh.position.distanceTo(trap.position) < trap.radius) {
-        z.hp -= trap.damage;
-        trap.cooldown = 1.0;
-        spawnBloodParticles(z.mesh.position, 4);
-        if (z.hp <= 0) {
-          applyZombieDamage(zombies.indexOf(z), 0); // trigger death logic
-        }
-        break;
-      }
-    }
-    // Decay after 60 seconds
-    trap.life = (trap.life || 60) - dt;
-    if (trap.life <= 0) {
-      scene.remove(trap.mesh);
-      disposeOwnedObject3D(trap.mesh);
-      spikeTraps.splice(i, 1);
     }
   }
 }
@@ -5443,7 +5581,8 @@ function animate(nowMs) {
     updateBullets(dt);
     updatePickups(dt);
     updateGrenades(dt);
-    updateMolotovs(dt);
+    updateMolotovProjectiles(dt);
+    updateMolotovFires(dt);
     updateLandMines(dt);
     updateSpikeTraps(dt);
     updateParticles(dt);
@@ -5563,7 +5702,7 @@ window.addEventListener("keydown", (e) => {
     toggleAudioMuted();
   }
   if (e.code === "KeyF" && gameOver) window.location.reload();
-  if (e.code === "KeyG" && gameState === "PLAYING" && !gameOver) throwGrenade();
+  if (e.code === "KeyG" && gameState === "PLAYING" && !gameOver) useThrowableOrTrap();
   if (e.code === "KeyV" && gameState === "PLAYING" && !gameOver) throwNoiseMaker();
   if (e.code === "KeyJ" && gameState === "PLAYING" && !gameOver) throwMolotov();
   if (e.code === "KeyK" && gameState === "PLAYING" && !gameOver && !e.repeat) placeLandMine();
@@ -5631,6 +5770,7 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });
 
 (async function bootstrap() {
