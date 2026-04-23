@@ -52,6 +52,7 @@ const messageEl = document.querySelector("#message");
 const minimapEl = document.querySelector("#minimap");
 const minimapCtx = minimapEl.getContext("2d");
 const damageFlashEl = document.querySelector("#damage-flash");
+const crosshairEl = document.querySelector("#crosshair");
 const hitMarkerEl = document.querySelector("#hit-marker");
 const worldStatsEl = document.querySelector("#world-stats");
 const topCenterAlertEl = document.querySelector("#top-center-alert");
@@ -552,6 +553,8 @@ let nextWaveTimer = 0;
 let paused = false;
 let alertTimer = 0;
 let hitMarkerTimer = 0;
+let crosshairSpread = 0;
+let crosshairFireImpulse = 0;
 let gameOver = false;
 let pointerLocked = false;
 let weaponRecoil = 0;
@@ -2373,6 +2376,8 @@ function resetWorldForNewMap() {
   screenShake = 0;
   isCrouching = false;
   isADS = false;
+  crosshairSpread = 0;
+  crosshairFireImpulse = 0;
   grenadeCount = 3;
   noiseMakerCount = 2;
   isNight = false;
@@ -2826,9 +2831,32 @@ function canTeammateSeeZombie(mate, zombie) {
   return hasLineOfSight(_eyeVec, _chestVec) || hasLineOfSight(_eyeVec, zombie.mesh.position.clone().add(new THREE.Vector3(0, 2.05, 0)));
 }
 
+function computeCurrentBulletSpread(weapon) {
+  if (weapon.pellets) return isADS ? 0.045 : 0.14;
+  const moveRatio = THREE.MathUtils.clamp(player.moveVelocity.length() / settings.sprintSpeed, 0, 1);
+  const movePenalty = moveRatio * (isADS ? 0.004 : 0.018);
+  const airbornePenalty = player.isGrounded ? 0 : (isADS ? 0.006 : 0.028);
+  const firePenalty = crosshairFireImpulse * (isADS ? 0.002 : 0.01);
+  let baseSpread = isADS ? 0.0006 : 0.0025;
+  if (weapon.name === "Pistol") baseSpread = isADS ? 0.0012 : 0.0042;
+  else if (weapon.name === "Crossbow") baseSpread = isADS ? 0.0003 : 0.0013;
+  else if (weapon.name === "Sniper") baseSpread = isADS ? 0.0002 : 0.0072;
+  else if (weapon.name === "Rocket") baseSpread = isADS ? 0.0012 : 0.006;
+  return baseSpread + movePenalty + airbornePenalty + firePenalty;
+}
+
+function applyDirectionalSpread(direction, spreadAmount) {
+  if (spreadAmount <= 0) return direction.clone();
+  const spreadDirection = direction.clone();
+  spreadDirection.x += (Math.random() - 0.5) * spreadAmount * 2;
+  spreadDirection.y += (Math.random() - 0.5) * spreadAmount;
+  spreadDirection.z += (Math.random() - 0.5) * spreadAmount * 2;
+  return spreadDirection.normalize();
+}
+
 function shoot() {
   if (!pointerLocked || gameOver || player.reloadTimer > 0 || player.shootCooldown > 0) return;
-    const weapon = getActiveWeapon(player);
+  const weapon = getActiveWeapon(player);
   syncPlayerAmmoFields(player);
   if (player.ammo <= 0) {
     messageEl.textContent = "Out of ammo. Press R to reload.";
@@ -2844,6 +2872,7 @@ function shoot() {
   camera.updateProjectionMatrix();
   weaponRecoil = weapon.recoil;
   weaponKick = 1;
+  crosshairFireImpulse = Math.min(1.6, crosshairFireImpulse + 0.35 + weapon.recoil * 0.15);
 
   if (isShotgunNow && firstPersonWeapon.sgMuzzleFlash) {
     firstPersonWeapon.sgMuzzleFlash.material.opacity = 0.95;
@@ -2864,14 +2893,11 @@ function shoot() {
 
   const origin = player.position.clone();
   origin.y -= 0.2;
+  const moveSpreadBonus = THREE.MathUtils.clamp(player.moveVelocity.length() / settings.sprintSpeed, 0, 1) * 0.045;
   if (weapon.pellets) {
-    const spread = isADS ? 0.045 : 0.14;
+    const spread = computeCurrentBulletSpread(weapon) + moveSpreadBonus;
     for (let p = 0; p < weapon.pellets; p++) {
-      const pelletDir = direction.clone();
-      pelletDir.x += (Math.random() - 0.5) * spread * 2;
-      pelletDir.y += (Math.random() - 0.5) * spread;
-      pelletDir.z += (Math.random() - 0.5) * spread * 2;
-      pelletDir.normalize();
+      const pelletDir = applyDirectionalSpread(direction, spread);
       spawnBullet(origin.clone(), pelletDir, weapon.damage, {
         speed: 58,
         life: weapon.range / 58 + 0.08,
@@ -2881,7 +2907,8 @@ function shoot() {
       });
     }
   } else {
-    spawnBullet(origin, direction, weapon.damage, {
+    const shotDirection = applyDirectionalSpread(direction, computeCurrentBulletSpread(weapon));
+    spawnBullet(origin, shotDirection, weapon.damage, {
       speed: 75,
       life: weapon.range / 75 + 0.18,
       color: 0xffd08a,
@@ -4241,6 +4268,18 @@ function updateHud(dt) {
 
   player.damageFlash = Math.max(0, player.damageFlash - dt * 1.5);
   damageFlashEl.style.opacity = `${player.damageFlash * 0.35}`;
+  crosshairFireImpulse = Math.max(0, crosshairFireImpulse - dt * 2.6);
+  if (crosshairEl) {
+    const moveRatio = THREE.MathUtils.clamp(player.moveVelocity.length() / settings.sprintSpeed, 0, 1);
+    const airbornePx = player.isGrounded ? 0 : 8;
+    const adsCollapse = isADS ? 0.18 : 1;
+    const targetSpread = (2 + moveRatio * 9 + crosshairFireImpulse * 14 + airbornePx) * adsCollapse;
+    crosshairSpread += (targetSpread - crosshairSpread) * Math.min(1, dt * 18);
+    const crosshairScale = 1 + crosshairSpread / 22;
+    const scopeLikeWeapon = activeWpn.adsRequired && isADS;
+    crosshairEl.style.transform = `translate(-50%, -50%) scale(${crosshairScale.toFixed(3)})`;
+    crosshairEl.style.opacity = scopeLikeWeapon ? "0.08" : (isADS ? "0.35" : "1");
+  }
   hitMarkerTimer = Math.max(0, hitMarkerTimer - dt);
   hitMarkerEl.style.opacity = `${hitMarkerTimer > 0 ? 1 : 0}`;
   alertTimer = Math.max(0, alertTimer - dt);
