@@ -810,6 +810,44 @@ const audioSystem = {
 function clearInputState() {
   keys.clear();
   isADS = false;
+  mouseLeftHeld = false;
+}
+
+// Global registry of in-flight timers so we can cancel them on reset.
+const pendingTimeouts = new Set();
+const pendingIntervals = new Set();
+function clearPendingTimers() {
+  for (const id of pendingTimeouts) clearTimeout(id);
+  pendingTimeouts.clear();
+  for (const id of pendingIntervals) clearInterval(id);
+  pendingIntervals.clear();
+}
+
+/** Centralised player-death path — every fatal hit goes through here. */
+function killPlayer(reason = "You died.") {
+  if (gameOver) return;
+  player.hp = 0;
+  gameOver = true;
+  if (activeVehicle) exitVehicle();
+  clearInputState();
+  player.shootCooldown = 0;
+  player.reloadTimer = 0;
+  messageEl.textContent = reason;
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  setMenuMode("death");
+}
+
+/** Returns true if the straight segment A→B is blocked by any visionBlocker. */
+const _segDir = new THREE.Vector3();
+const _segRay = new THREE.Raycaster();
+function segmentBlockedByScenery(from, to) {
+  _segDir.subVectors(to, from);
+  const dist = _segDir.length();
+  if (dist <= 0.0001) return false;
+  _segDir.normalize();
+  _segRay.set(from, _segDir);
+  _segRay.far = dist;
+  return _segRay.intersectObjects(visionBlockers, true).length > 0;
 }
 
 function updateAudioButtonLabel() {
@@ -2291,9 +2329,11 @@ function makeStructure(x, z) {
   roof.castShadow = true;
 
   group.add(base, roof);
+  scene.add(group);
   visionBlockers.push(base, roof);
   structureGroups.push(group);
-  scene.add(group);
+  group.userData.visionChildren = [base, roof];
+  registerStaticCollider(group, 0.15, "structure");
 
   if (Math.random() < 0.6) {
     const numBarrels = 1 + Math.floor(Math.random() * 3);
@@ -2377,6 +2417,7 @@ function makeChunk(cx, cz) {
       scene.add(holder);
       cityPropGroups.push(holder);
       visionBlockers.push(holder);
+      registerStaticCollider(holder, 0.2, "cityBuilding");
     }
   }
 }
@@ -2429,10 +2470,14 @@ function ensureChunks() {
           else o.material?.dispose();
         }
       });
-      // Clean visionBlockers
+      // Clean visionBlockers — structures push `base` and `roof` (vision children), not the group itself.
+      const visChildren = g.userData?.visionChildren || [g];
       for (let j = visionBlockers.length - 1; j >= 0; j--) {
-        if (visionBlockers[j] === g) visionBlockers.splice(j, 1);
+        if (visChildren.includes(visionBlockers[j]) || visionBlockers[j] === g) {
+          visionBlockers.splice(j, 1);
+        }
       }
+      removeStaticCollider(g);
       structureGroups.splice(i, 1);
     }
   }
@@ -2444,10 +2489,10 @@ function ensureChunks() {
     if (Math.abs(cx - pcx) > chunkRadius + 1 || Math.abs(cz - pcz) > chunkRadius + 1) {
       scene.remove(g);
       disposeObject3D(g);
-      // Clean visionBlockers
       for (let j = visionBlockers.length - 1; j >= 0; j--) {
         if (visionBlockers[j] === g) visionBlockers.splice(j, 1);
       }
+      removeStaticCollider(g);
       cityPropGroups.splice(i, 1);
     }
   }
@@ -2511,6 +2556,10 @@ function buildMapSelectUi() {
 }
 
 function resetWorldForNewMap() {
+  // Cancel all in-flight timers (boss spawn setTimeout, acid spit intervals, etc.)
+  clearPendingTimers();
+  // Wipe the static collider table — every world object will be re-registered at spawn.
+  staticColliders.length = 0;
   for (const c of groundChunks) {
     scene.remove(c.mesh);
     c.mesh.geometry.dispose();
@@ -2566,8 +2615,17 @@ function resetWorldForNewMap() {
   player.pitch = 0;
   player.velocityY = 0;
   player.moveVelocity.set(0, 0, 0);
+  player.damageFlash = 0;
+  player.reloadTimer = 0;
+  player.shootCooldown = 0;
+  player.bobTime = 0;
+  player.activeWeapon = 0;
+  mouseLeftHeld = false;
+  keys.clear();
   gameOver = false;
   paused = false;
+  inventoryOpen = false;
+  upgradeBenchOpen = false;
   wave = 1;
   waveSpawnBudget = 24;
   nextWaveTimer = 0;
@@ -2905,6 +2963,7 @@ function spawnVehiclesForMap() {
     const vehicle = createVehicle(type, x, z, terrainHeight);
     vehicles.push(vehicle);
     scene.add(vehicle.mesh);
+    registerStaticCollider(vehicle.mesh, 0.15, "vehicle");
   }
 }
 
@@ -2926,6 +2985,8 @@ function enterVehicle(vehicle) {
   vehicle.occupied = true;
   vehicle.driver = "player";
   activeVehicle = vehicle;
+  // Remove the vehicle's collider while being driven (player is inside it)
+  removeStaticCollider(vehicle.mesh);
   camera.position.copy(vehicle.mesh.position);
   camera.position.y += 2.5;
   firstPersonWeapon.rig.visible = false;
@@ -2944,6 +3005,8 @@ function exitVehicle() {
   player.position.y = terrainHeight(player.position.x, player.position.z) + 1.8;
   activeVehicle = null;
   firstPersonWeapon.rig.visible = true;
+  // Re-register the vehicle as a static collider if it's not destroyed
+  if (!v.destroyed) registerStaticCollider(v.mesh, 0.15, "vehicle");
   messageEl.textContent = "Exited vehicle.";
 }
 
@@ -2966,15 +3029,17 @@ function updateVehicles(dt) {
         const destroyed = damageVehicle(vehicle, zombie.damage * dt);
         if (destroyed && !vehicle.destroyed) {
           vehicle.destroyed = true;
+          removeStaticCollider(vehicle.mesh);
           createExplosion(vehicle.mesh.position, 6, 60);
           playSpatialSfx("explosion", vehicle.mesh.position, 1);
           topCenterAlertEl.textContent = "💥 VEHICLE DESTROYED!";
           alertTimer = 2.5;
           if (activeVehicle === vehicle) {
             exitVehicle();
-            player.hp -= 25;
+            player.hp = Math.max(0, player.hp - 25);
             player.damageFlash = 1.0;
             messageEl.textContent = "Vehicle exploded! You were thrown clear!";
+            if (player.hp <= 0) killPlayer("Caught in the vehicle explosion.");
           }
         }
       }
@@ -2986,6 +3051,7 @@ function updateVehicles(dt) {
       const v = vehicles[i];
       v.hp -= dt * 10; // Fade out timer
       if (v.hp <= -30) {
+        removeStaticCollider(v.mesh);
         scene.remove(v.mesh);
         vehicles.splice(i, 1);
       }
@@ -3158,6 +3224,8 @@ function getActiveMuzzleNode(weapon) {
 
 function shoot() {
   if (!pointerLocked || gameOver || player.reloadTimer > 0 || player.shootCooldown > 0) return;
+  if (activeVehicle) return; // Can't shoot while driving
+  if (inventoryOpen || upgradeBenchOpen) return;
   const weapon = getActiveWeapon(player);
   syncPlayerAmmoFields(player);
   if (player.ammo <= 0) {
@@ -3464,6 +3532,14 @@ function updateBullets(dt) {
       bullets.splice(i, 1);
       continue;
     }
+    // Block projectile against scenery (buildings, trees) so you can't shoot through walls.
+    if (segmentBlockedByScenery(_bulletPrev, bullet.mesh.position)) {
+      spawnSparks(bullet.mesh.position, 3);
+      releaseBulletRecord(bullet);
+      bullets.splice(i, 1);
+      continue;
+    }
+    let hitZombie = false;
     for (let zi = zombies.length - 1; zi >= 0; zi -= 1) {
       const zombie = zombies[zi];
       const hit = getZombieHit(_bulletPrev, bullet.mesh.position, zombie);
@@ -3482,9 +3558,11 @@ function updateBullets(dt) {
           messageEl.textContent =
             hs ? `Headshot! +${isADS ? 160 : 150}pts` : hit.part === "torso" ? "Body hit." : "Limb hit.";
         }
+        hitZombie = true;
         break;
       }
     }
+    if (hitZombie) continue;
   }
 }
 
@@ -3873,13 +3951,7 @@ function updateZombies(dt) {
       if (dToPlayer < puddle.radius) {
         player.hp = Math.max(0, player.hp - puddle.damagePerSecond * dt);
         player.damageFlash = 0.5;
-        if (player.hp <= 0 && !gameOver) {
-          player.hp = 0;
-          gameOver = true;
-          messageEl.textContent = "Dissolved by acid...";
-          if (document.pointerLockElement === canvas) document.exitPointerLock();
-          setMenuMode("death");
-        }
+        if (player.hp <= 0) killPlayer("Dissolved by acid...");
       }
     }
     // Fire puddles damage zombies
@@ -3985,19 +4057,14 @@ function updateZombies(dt) {
           zombie.hunterLeaping = false;
         }
         // Check collision with player
-        if (targetIsPlayer && distance < 1.8 && zombie.leapTime > 0) {
+        if (targetIsPlayer && distance < 1.8 && zombie.leapTime > 0 && !gameOver) {
           player.hp = Math.max(0, player.hp - 18);
           player.damageFlash = 0.9;
           addScreenShake(0.4);
           triggerHitStop(0.05);
           messageEl.textContent = "HUNTER POUNCED!";
           zombie.hunterLeaping = false;
-          if (player.hp <= 0 && !gameOver) {
-            gameOver = true;
-            messageEl.textContent = "You died.";
-            if (document.pointerLockElement === canvas) document.exitPointerLock();
-            setMenuMode("death");
-          }
+          if (player.hp <= 0) killPlayer("A Hunter got you.");
         }
         continue; // Skip normal movement during leap
       } else if (distance < 52) {
@@ -4014,8 +4081,8 @@ function updateZombies(dt) {
           zombie.isCharging = false;
         }
         // Check player collision
-        if (targetIsPlayer && distance < 2) {
-          player.hp -= zombie.damage * 2;
+        if (targetIsPlayer && distance < 2 && !gameOver) {
+          player.hp = Math.max(0, player.hp - zombie.damage * 2);
           player.damageFlash = 0.9;
           addScreenShake(0.6);
           triggerHitStop(0.075);
@@ -4024,13 +4091,7 @@ function updateZombies(dt) {
           player.position.addScaledVector(knockDir, 6);
           messageEl.textContent = "CHARGER HIT!";
           zombie.isCharging = false;
-          if (player.hp <= 0 && !gameOver) {
-            player.hp = 0;
-            gameOver = true;
-            messageEl.textContent = "Trampled by Charger...";
-            if (document.pointerLockElement === canvas) document.exitPointerLock();
-            setMenuMode("death");
-          }
+          if (player.hp <= 0) killPlayer("Trampled by a Charger.");
         }
       } else if (distance < 40 && distance > 6 && zombie.chargeCooldown <= 0) {
         // Start charge
@@ -4137,12 +4198,12 @@ function updateZombies(dt) {
     }
 
     const attackDistance = zombie.type === "brute" ? 1.45 : settings.zombieHitDistance;
-    if (distance < attackDistance && zombie.attackTimer <= 0 && !zombie.hunterLeaping && !zombie.isCharging) {
+    if (!gameOver && distance < attackDistance && zombie.attackTimer <= 0 && !zombie.hunterLeaping && !zombie.isCharging) {
       zombie.attackTimer = settings.zombieAttackEvery;
       zombie.attackAnimating = true;
       zombie.attackAnimTime = 0;
       if (targetIsPlayer) {
-        player.hp -= zombie.damage;
+        player.hp = Math.max(0, player.hp - zombie.damage);
         player.damageFlash = 0.9;
         addScreenShake(
           zombie.type === "juggernaut" ? 0.28 : zombie.type === "brute" ? 0.18 : zombie.type === "charger" ? 0.16 : 0.08,
@@ -4151,13 +4212,7 @@ function updateZombies(dt) {
           triggerHitStop(0.04);
         }
         messageEl.textContent = zombie.type === "brute" ? "Brute smash!" : zombie.type === "spitter" ? "Spitter clawed you!" : zombie.type === "hunter" ? "Hunter slashed!" : zombie.type === "charger" ? "Charger punched!" : zombie.type === "crawler" ? "Crawler bit you!" : zombie.type === "juggernaut" ? "Juggernaut crushed you!" : zombie.type === "boomer" ? "Boomer clawed you!" : zombie.type === "screamer" ? "Screamer scratched you!" : "A zombie hit you!";
-        if (player.hp <= 0) {
-          player.hp = 0;
-          gameOver = true;
-          messageEl.textContent = "You died.";
-          if (document.pointerLockElement === canvas) document.exitPointerLock();
-          setMenuMode("death");
-        }
+        if (player.hp <= 0) killPlayer("A zombie got you.");
       } else if (isSurvivorAlive(eventDirector) && distance < attackDistance && eventDirector.survivorPosition) {
         const sPos = new THREE.Vector3(eventDirector.survivorPosition.x, eventDirector.survivorPosition.y, eventDirector.survivorPosition.z);
         if (zombie.mesh.position.distanceTo(sPos) < attackDistance + 1) {
@@ -4189,15 +4244,20 @@ function spawnAcidSpit(from, to) {
     time += 0.016;
     acid.position.addScaledVector(velocity, 0.016);
     velocity.y += settings.gravity * 0.016 * 0.3;
-    if (time >= duration || acid.position.y < terrainHeight(acid.position.x, acid.position.z)) {
+    const shouldEnd =
+      time >= duration ||
+      acid.position.y < terrainHeight(acid.position.x, acid.position.z) ||
+      gameState !== "PLAYING" || gameOver;
+    if (shouldEnd) {
       clearInterval(interval);
+      pendingIntervals.delete(interval);
       scene.remove(acid);
       acid.geometry.dispose();
       acid.material.dispose();
-      // Create acid puddle
-      createAcidPuddle(acid.position);
+      if (gameState === "PLAYING" && !gameOver) createAcidPuddle(acid.position);
     }
   }, 16);
+  pendingIntervals.add(interval);
 }
 
 function createAcidPuddle(position) {
@@ -4606,7 +4666,10 @@ function updateWaveDirector(dt) {
         alertTimer = 4.5;
         for (let i = 0; i < 14; i++) spawnZombieNearPlayer();
         messageEl.textContent = `HORDE NIGHT! Wave ${wave} — massive surge for 65 seconds!`;
-        if (!bossAlive) setTimeout(() => spawnBoss(), 4000);
+        if (!bossAlive) {
+          const bossTid = setTimeout(() => { pendingTimeouts.delete(bossTid); if (gameState === "PLAYING" && !gameOver && !bossAlive) spawnBoss(); }, 4000);
+          pendingTimeouts.add(bossTid);
+        }
         if (grenadeCount < 2) { grenadeCount = 2; }
       } else {
         topCenterAlertEl.textContent = `Wave ${wave} incoming`;
@@ -4667,6 +4730,90 @@ function preventTreeCollision() {
       player.position.z += dz * push;
     }
   }
+}
+
+// ─── Static AABB colliders ───────────────────────────────────────────────────
+// Any solid (building, parked car, barrel) registers an XZ rectangle here.
+// Each entry: { minX, maxX, minZ, maxZ, kind, ref } — ref is the group/mesh
+// so we can remove entries when a chunk unloads or a vehicle explodes.
+const staticColliders = [];
+const PLAYER_RADIUS = 0.55;
+const VEHICLE_RADIUS = 1.6;
+
+function registerStaticCollider(obj, pad = 0, kind = "static") {
+  obj.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(obj);
+  if (!isFinite(box.min.x) || !isFinite(box.max.x)) return;
+  const entry = {
+    minX: box.min.x - pad,
+    maxX: box.max.x + pad,
+    minZ: box.min.z - pad,
+    maxZ: box.max.z + pad,
+    kind,
+    ref: obj,
+  };
+  staticColliders.push(entry);
+  obj.userData.colliderEntry = entry;
+  return entry;
+}
+
+function removeStaticCollider(obj) {
+  const entry = obj?.userData?.colliderEntry;
+  if (!entry) return;
+  const idx = staticColliders.indexOf(entry);
+  if (idx >= 0) staticColliders.splice(idx, 1);
+  obj.userData.colliderEntry = null;
+}
+
+// Capsule (circle-in-XZ) push-out against every nearby AABB. O(N) with a tight
+// broadphase: skip colliders farther than `skipRange` on either axis.
+const COLLIDER_SKIP_RANGE = 50;
+function resolveCircleVsStatics(px, pz, radius) {
+  let ox = px;
+  let oz = pz;
+  for (let i = 0; i < staticColliders.length; i++) {
+    const c = staticColliders[i];
+    if (c.minX - ox > COLLIDER_SKIP_RANGE || ox - c.maxX > COLLIDER_SKIP_RANGE) continue;
+    if (c.minZ - oz > COLLIDER_SKIP_RANGE || oz - c.maxZ > COLLIDER_SKIP_RANGE) continue;
+
+    const closestX = Math.max(c.minX, Math.min(ox, c.maxX));
+    const closestZ = Math.max(c.minZ, Math.min(oz, c.maxZ));
+    const dx = ox - closestX;
+    const dz = oz - closestZ;
+    const dSq = dx * dx + dz * dz;
+    if (dSq >= radius * radius) continue;
+
+    const d = Math.sqrt(dSq);
+    if (d < 0.0001) {
+      // Inside the box — push out along the shortest axis.
+      const leftPen = ox - c.minX;
+      const rightPen = c.maxX - ox;
+      const backPen = oz - c.minZ;
+      const frontPen = c.maxZ - oz;
+      const minPen = Math.min(leftPen, rightPen, backPen, frontPen);
+      if (minPen === leftPen) ox = c.minX - radius;
+      else if (minPen === rightPen) ox = c.maxX + radius;
+      else if (minPen === backPen) oz = c.minZ - radius;
+      else oz = c.maxZ + radius;
+    } else {
+      const push = (radius - d) / d;
+      ox += dx * push;
+      oz += dz * push;
+    }
+  }
+  return { x: ox, z: oz };
+}
+
+function resolvePlayerObstacles() {
+  const r = resolveCircleVsStatics(player.position.x, player.position.z, PLAYER_RADIUS);
+  player.position.x = r.x;
+  player.position.z = r.z;
+}
+
+function resolveVehicleObstacles(vehicle) {
+  const r = resolveCircleVsStatics(vehicle.mesh.position.x, vehicle.mesh.position.z, VEHICLE_RADIUS);
+  vehicle.mesh.position.x = r.x;
+  vehicle.mesh.position.z = r.z;
 }
 
 function drawMinimap() {
@@ -5169,13 +5316,7 @@ function createExplosion(position, radius, damage) {
       player.hp = Math.max(0, player.hp - damage * falloff * 0.4);
       player.damageFlash = 0.9;
       triggerHitStop(0.08);
-      if (player.hp <= 0) {
-        player.hp = 0;
-        gameOver = true;
-        messageEl.textContent = "Killed by explosion.";
-        if (document.pointerLockElement === canvas) document.exitPointerLock();
-        setMenuMode("death");
-      }
+      if (player.hp <= 0) killPlayer("Killed by explosion.");
     }
   }
 }
@@ -5300,19 +5441,13 @@ function updateMolotovFires(dt) {
       molotovFires.splice(fi, 1);
       continue;
     }
+    const fp = f.mesh.position;
     if (gameState === "PLAYING" && !gameOver) {
-      const fp = f.mesh.position;
       const d = fp.distanceTo(player.position);
       if (d < f.radius) {
         player.hp = Math.max(0, player.hp - f.damagePerSecond * dt * 0.55);
         player.damageFlash = 0.45;
-        if (player.hp <= 0 && !gameOver) {
-          player.hp = 0;
-          gameOver = true;
-          messageEl.textContent = "Burned by fire...";
-          if (document.pointerLockElement === canvas) document.exitPointerLock();
-          setMenuMode("death");
-        }
+        if (player.hp <= 0) killPlayer("Burned by fire...");
       }
     }
     for (let zi = zombies.length - 1; zi >= 0; zi--) {
@@ -5487,6 +5622,7 @@ function spawnArrow(origin, direction, damage) {
 const _arrowDir     = new THREE.Vector3();
 const _arrowForward = new THREE.Vector3(0, 0, 1);
 const _arrowStickOff = new THREE.Vector3(0, 1.2, 0);
+const _arrowPrev    = new THREE.Vector3();
 function updateArrows(dt) {
   for (let i = arrows.length - 1; i >= 0; i--) {
     const a = arrows[i];
@@ -5501,6 +5637,7 @@ function updateArrows(dt) {
     }
     a.life -= dt;
     a.velocity.y += settings.gravity * 0.18 * dt;
+    _arrowPrev.copy(a.mesh.position);
     a.mesh.position.addScaledVector(a.velocity, dt);
     _arrowDir.copy(a.velocity).normalize();
     a.mesh.quaternion.setFromUnitVectors(_arrowForward, _arrowDir);
@@ -5508,6 +5645,12 @@ function updateArrows(dt) {
       scene.remove(a.mesh);
       a.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
       arrows.splice(i, 1);
+      continue;
+    }
+    // Block arrows on scenery
+    if (segmentBlockedByScenery(_arrowPrev, a.mesh.position)) {
+      a.stuck = true;
+      a.stuckTimer = 5;
       continue;
     }
     let hit = false;
@@ -5580,10 +5723,12 @@ const _rocketForward = new THREE.Vector3(0, 0, 1);
 const _rocketPos     = new THREE.Vector3();
 const _trailVel      = new THREE.Vector3();
 
+const _rocketPrev    = new THREE.Vector3();
 function updateRockets(dt) {
   for (let i = rockets.length - 1; i >= 0; i--) {
     const r = rockets[i];
     r.life -= dt;
+    _rocketPrev.copy(r.mesh.position);
     r.mesh.position.addScaledVector(r.velocity, dt);
     _rocketDir.copy(r.velocity).normalize();
     r.mesh.quaternion.setFromUnitVectors(_rocketForward, _rocketDir);
@@ -5605,6 +5750,8 @@ function updateRockets(dt) {
       const floor = terrainHeight(_rocketPos.x, _rocketPos.z);
       if (_rocketPos.y < floor + 0.2) exploded = true;
     }
+    // Explode on wall/building impact
+    if (!exploded && segmentBlockedByScenery(_rocketPrev, _rocketPos)) exploded = true;
     if (!exploded) {
       for (const z of zombies) {
         if (_rocketPos.distanceTo(z.mesh.position) < 1.4) { exploded = true; break; }
@@ -5763,7 +5910,10 @@ function spawnExplosiveBarrel(x, z) {
   group.add(body, topCap, band1, band2);
   group.position.set(x, y, z);
   scene.add(group);
-  barrels.push({ mesh: group, center: new THREE.Vector3(x, y + 0.43, z) });
+  const barrel = { mesh: group, center: new THREE.Vector3(x, y + 0.43, z) };
+  barrels.push(barrel);
+  // Register a small AABB so the player can't walk through barrels
+  registerStaticCollider(group, 0, "barrel");
 }
 
 function checkBarrelHits(bulletFrom, bulletTo) {
@@ -5771,6 +5921,7 @@ function checkBarrelHits(bulletFrom, bulletTo) {
     const b = barrels[i];
     if (segmentSphereHit(bulletFrom, bulletTo, b.center, 0.44)) {
       const pos = b.center.clone();
+      removeStaticCollider(b.mesh);
       scene.remove(b.mesh);
       disposeOwnedObject3D(b.mesh);
       barrels.splice(i, 1);
@@ -6138,6 +6289,8 @@ function getPlayerMaxHealth() {
 // ─── Melee Attack System ────────────────────────────────────────────────────
 function performMelee() {
   if (!pointerLocked || gameOver || meleeCooldown > 0) return;
+  if (activeVehicle || inventoryOpen || upgradeBenchOpen) return;
+  if (player.reloadTimer > 0) return;
   meleeCooldown = 0.65;
   playSfx("melee_knife", 1);
 
@@ -6256,10 +6409,10 @@ function animate(nowMs) {
       if (player.reloadTimer <= 0) {
         syncPlayerAmmoFields(player);
         const weapon = getActiveWeapon(player);
-        const needed = weapon.magSize - player.ammo;
-        const loaded = Math.min(needed, player.reserveAmmo);
+        const needed = Math.max(0, weapon.magSize - player.ammo);
+        const loaded = Math.min(needed, Math.max(0, player.reserveAmmo));
         player.ammo += loaded;
-        player.reserveAmmo -= loaded;
+        player.reserveAmmo = Math.max(0, player.reserveAmmo - loaded);
         commitPlayerAmmoFields(player);
         messageEl.textContent = "Reloaded.";
       }
@@ -6267,12 +6420,13 @@ function animate(nowMs) {
 
     player.shootCooldown = Math.max(0, player.shootCooldown - dt);
     // Auto-fire for flamethrower (and any other full-auto weapons) while mouse held
-    if (mouseLeftHeld && pointerLocked && player.shootCooldown === 0 && !gameOver) {
+    if (mouseLeftHeld && pointerLocked && player.shootCooldown === 0 && !gameOver && !activeVehicle && !inventoryOpen && !upgradeBenchOpen) {
       const _aw = getActiveWeapon(player);
       if (_aw.name === "Flamethrower" || _aw.name === "Rifle") shoot();
     }
     if (activeVehicle) {
       updateVehicles(dt);
+      resolveVehicleObstacles(activeVehicle);
       sun.position.x = activeVehicle.mesh.position.x + 30;
       sun.position.z = activeVehicle.mesh.position.z - 10;
     } else {
@@ -6280,9 +6434,12 @@ function animate(nowMs) {
       sun.position.x = player.position.x + 30;
       sun.position.z = player.position.z - 10;
       preventTreeCollision();
+      resolvePlayerObstacles();
     }
     ensureChunks();
     updateZombies(dt);
+    // If a zombie killed the player this frame, skip all further combat updates.
+    if (!gameOver) {
     updateTeammates(dt);
     updateBullets(dt);
     updateArrows(dt);
@@ -6312,6 +6469,7 @@ function animate(nowMs) {
         grenadeCount = Math.min(grenadeCount + 1, 5);
       }
     }
+    } // end if (!gameOver) combat block
   }
 
   const adsFov = isADS ? 48 : 75;
