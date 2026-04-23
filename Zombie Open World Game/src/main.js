@@ -27,7 +27,11 @@ import { createEventDirector, updateEventDirector, executeEvent, isSurvivorAlive
 import { createMissionGenerator, updateMissions, onMaterialCollected, onZombieKilled, getMissionRewards, formatMissionStatus, MISSION_TYPES } from "./game/missionSystem.js";
 import { loadProgression, addGlobalXP, getLevel, formatProgression } from "./game/progression.js";
 import gunMetalDiffuseUrl from "./assets/textures/gun_metal_diffuse.jpg";
+import gunMetalNormalUrl from "./assets/textures/gun_metal_normal.jpg";
+import gunMetalRoughUrl from "./assets/textures/gun_metal_rough.jpg";
 import gunGripDiffuseUrl from "./assets/textures/gun_grip_diffuse.jpg";
+import gunGripNormalUrl from "./assets/textures/gun_grip_normal.jpg";
+import gunGripRoughUrl from "./assets/textures/gun_grip_rough.jpg";
 import teammateJacketDiffuseUrl from "./assets/textures/teammate_jacket_diffuse.jpg";
 import teammateJacketRoughUrl from "./assets/textures/teammate_jacket_rough.jpg";
 import teammateJacketNormalUrl from "./assets/textures/teammate_jacket_normal.jpg";
@@ -216,14 +220,34 @@ zombieFleshRottenRed.colorSpace = THREE.SRGBColorSpace;
 const gunMetalDiffuse = textureLoader.load(gunMetalDiffuseUrl);
 gunMetalDiffuse.wrapS = THREE.RepeatWrapping;
 gunMetalDiffuse.wrapT = THREE.RepeatWrapping;
-gunMetalDiffuse.repeat.set(1.5, 1.5);
+gunMetalDiffuse.repeat.set(2.2, 2.2);
 gunMetalDiffuse.colorSpace = THREE.SRGBColorSpace;
+
+const gunMetalNormal = textureLoader.load(gunMetalNormalUrl);
+gunMetalNormal.wrapS = THREE.RepeatWrapping;
+gunMetalNormal.wrapT = THREE.RepeatWrapping;
+gunMetalNormal.repeat.set(2.2, 2.2);
+
+const gunMetalRough = textureLoader.load(gunMetalRoughUrl);
+gunMetalRough.wrapS = THREE.RepeatWrapping;
+gunMetalRough.wrapT = THREE.RepeatWrapping;
+gunMetalRough.repeat.set(2.2, 2.2);
 
 const gunGripDiffuse = textureLoader.load(gunGripDiffuseUrl);
 gunGripDiffuse.wrapS = THREE.RepeatWrapping;
 gunGripDiffuse.wrapT = THREE.RepeatWrapping;
-gunGripDiffuse.repeat.set(1.2, 1.2);
+gunGripDiffuse.repeat.set(1.6, 1.6);
 gunGripDiffuse.colorSpace = THREE.SRGBColorSpace;
+
+const gunGripNormal = textureLoader.load(gunGripNormalUrl);
+gunGripNormal.wrapS = THREE.RepeatWrapping;
+gunGripNormal.wrapT = THREE.RepeatWrapping;
+gunGripNormal.repeat.set(1.6, 1.6);
+
+const gunGripRough = textureLoader.load(gunGripRoughUrl);
+gunGripRough.wrapS = THREE.RepeatWrapping;
+gunGripRough.wrapT = THREE.RepeatWrapping;
+gunGripRough.repeat.set(1.6, 1.6);
 
 const teammateJacketDiffuse = textureLoader.load(teammateJacketDiffuseUrl);
 teammateJacketDiffuse.wrapS = THREE.RepeatWrapping;
@@ -663,6 +687,9 @@ let hordeNightActive = false;
 let hordeNightTimer = 0;
 let bossAlive = false;
 const grenades = [];
+const arrows = [];
+const rockets = [];
+const flamePuffs = [];
 const molotovProjectiles = [];
 const molotovFires = [];
 const landMines = [];
@@ -1397,16 +1424,22 @@ const zombieBloodMaterial = new THREE.MeshStandardMaterial({
 
 const gunMetalMaterial = new THREE.MeshStandardMaterial({
   map: gunMetalDiffuse,
+  normalMap: gunMetalNormal,
+  roughnessMap: gunMetalRough,
   color: 0x8d9297,
-  roughness: 0.5,
+  roughness: 0.58,
   metalness: 0.75,
+  normalScale: new THREE.Vector2(0.42, 0.42),
 });
 
 const gunGripMaterial = new THREE.MeshStandardMaterial({
   map: gunGripDiffuse,
+  normalMap: gunGripNormal,
+  roughnessMap: gunGripRough,
   color: 0x4c382d,
-  roughness: 0.9,
+  roughness: 0.85,
   metalness: 0.08,
+  normalScale: new THREE.Vector2(0.3, 0.3),
 });
 
 /** Shared geometry templates — scale meshes instead of creating new geometries per entity. */
@@ -1807,6 +1840,23 @@ function createFirstPersonWeapon() {
   pistolGroup.add(psSlide, psFrame, psBarrel, psGrip);
   pistolGroup.visible = false;
 
+  /** Special weapon groups (textured procedural models) */
+  const crossbowGroup = createCrossbowMesh(gunMetalMaterial, gunGripMaterial);
+  crossbowGroup.scale.setScalar(0.95);
+  crossbowGroup.visible = false;
+
+  const flamethrowerGroup = createFlamethrowerMesh(gunMetalMaterial, gunGripMaterial);
+  flamethrowerGroup.scale.setScalar(0.9);
+  flamethrowerGroup.visible = false;
+
+  const sniperGroup = createSniperMesh(gunMetalMaterial, gunGripMaterial);
+  sniperGroup.scale.setScalar(0.95);
+  sniperGroup.visible = false;
+
+  const rocketGroup = createRocketLauncherMesh(gunMetalMaterial, gunGripMaterial);
+  rocketGroup.scale.setScalar(0.9);
+  rocketGroup.visible = false;
+
   /** Muzzle flash for rifle (at barrel tip) */
   const muzzleFlash = new THREE.Mesh(
     new THREE.SphereGeometry(0.08, 10, 10),
@@ -1822,7 +1872,17 @@ function createFirstPersonWeapon() {
   sgMuzzleFlash.position.set(0, 0.01, -1.18);
   sgMuzzleFlash.visible = false;
 
-  weapon.add(fallbackGun, shotgunGroup, pistolGroup, muzzleFlash, sgMuzzleFlash);
+  weapon.add(
+    fallbackGun,
+    shotgunGroup,
+    pistolGroup,
+    crossbowGroup,
+    flamethrowerGroup,
+    sniperGroup,
+    rocketGroup,
+    muzzleFlash,
+    sgMuzzleFlash,
+  );
   weapon.position.set(0.36, -0.28, -0.55);
   weapon.rotation.set(-0.12, -0.1, -0.04);
 
@@ -1908,6 +1968,10 @@ function createFirstPersonWeapon() {
     sgMuzzleFlash,
     shotgunGroup,
     pistolGroup,
+    crossbowGroup,
+    flamethrowerGroup,
+    sniperGroup,
+    rocketGroup,
     get akHolder() {
       return akHolder;
     },
@@ -2541,6 +2605,12 @@ function resetWorldForNewMap() {
     g.mesh.material?.dispose();
   }
   grenades.length = 0;
+  for (const a of arrows) { scene.remove(a.mesh); a.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } }); }
+  arrows.length = 0;
+  for (const r of rockets) { scene.remove(r.mesh); r.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } }); }
+  rockets.length = 0;
+  for (const f of flamePuffs) { scene.remove(f.mesh); f.mesh.geometry?.dispose(); f.mesh.material?.dispose(); }
+  flamePuffs.length = 0;
   for (const mp of molotovProjectiles) { scene.remove(mp.mesh); disposeOwnedObject3D(mp.mesh); }
   molotovProjectiles.length = 0;
   for (const f of molotovFires) { scene.remove(f.mesh); disposeOwnedObject3D(f.mesh); }
@@ -3070,6 +3140,11 @@ function applyDirectionalSpread(direction, spreadAmount) {
   return spreadDirection.normalize();
 }
 
+function getActiveMuzzleNode(weapon) {
+  if (weapon?.pellets && firstPersonWeapon.sgMuzzleFlash) return firstPersonWeapon.sgMuzzleFlash;
+  return firstPersonWeapon.muzzleFlash || null;
+}
+
 function shoot() {
   if (!pointerLocked || gameOver || player.reloadTimer > 0 || player.shootCooldown > 0) return;
   const weapon = getActiveWeapon(player);
@@ -3081,7 +3156,11 @@ function shoot() {
 
   player.ammo -= 1;
   const isShotgunNow = weapon.pellets;
-  playSfx(isShotgunNow ? "shotgun_player" : "gunshot_player", 1);
+  const wn = weapon.name;
+  if (wn === "Crossbow") playSfx("gunshot_player", 0.45);
+  else if (wn === "Flamethrower") playSfx("gunshot_player", 0.5);
+  else if (wn === "Rocket") playSfx("explosion", 0.55);
+  else playSfx(isShotgunNow ? "shotgun_player" : "gunshot_player", 1);
   player.shootCooldown = weapon.fireDelay;
   player.bobTime += 0.03;
   camera.fov = 77.5;
@@ -3107,8 +3186,38 @@ function shoot() {
     -Math.cos(player.yaw) * Math.cos(player.pitch),
   ).normalize();
 
-  _bulletOrigin.copy(player.position);
-  _bulletOrigin.y -= 0.2;
+  const muzzleNode = getActiveMuzzleNode(weapon);
+  if (muzzleNode) {
+    firstPersonWeapon.weapon.updateMatrixWorld(true);
+    muzzleNode.getWorldPosition(_bulletOrigin);
+  } else {
+    _bulletOrigin.copy(player.position);
+    _bulletOrigin.y -= 0.2;
+  }
+
+  const wName = weapon.name;
+
+  if (wName === "Crossbow") {
+    // Arrow projectile — slow, visible shaft, sticks into zombies
+    spawnArrow(_bulletOrigin, _bulletDirection, weapon.damage);
+    commitPlayerAmmoFields(player);
+    return;
+  }
+
+  if (wName === "Rocket") {
+    // Physical rocket that flies and detonates
+    spawnRocket(_bulletOrigin, _bulletDirection, weapon.damage);
+    commitPlayerAmmoFields(player);
+    return;
+  }
+
+  if (wName === "Flamethrower") {
+    // Burst of flame puffs in a cone — spawned per shot, damage applied per frame
+    for (let fp = 0; fp < 5; fp++) spawnFlamePuff(_bulletOrigin, _bulletDirection);
+    commitPlayerAmmoFields(player);
+    return;
+  }
+
   if (weapon.pellets) {
     const spread = computeCurrentBulletSpread(weapon);
     for (let p = 0; p < weapon.pellets; p++) {
@@ -3133,11 +3242,13 @@ function shoot() {
       _bulletDirection.z += (Math.random() - 0.5) * spread * 2;
       _bulletDirection.normalize();
     }
+    // Sniper gets a large, fast, glowing tracer round
+    const isSniper = wName === "Sniper";
     spawnBullet(_bulletOrigin, _bulletDirection, weapon.damage, {
-      speed: 75,
-      life: weapon.range / 75 + 0.18,
-      color: 0xffd08a,
-      radius: 0.05,
+      speed: isSniper ? 200 : 75,
+      life: isSniper ? weapon.range / 200 + 0.25 : weapon.range / 75 + 0.18,
+      color: isSniper ? 0x44ddff : 0xffd08a,
+      radius: isSniper ? 0.085 : 0.05,
       owner: "player",
     });
   }
@@ -3175,8 +3286,14 @@ function updateWeapon(dt) {
   lookSwayX *= Math.exp(-dt * 18);
   lookSwayY *= Math.exp(-dt * 18);
   const weapon = getActiveWeapon(player);
+  const weaponName = weapon.name;
+  const isRifle = weaponName === "Rifle";
   const isPistol = weapon.name === "Pistol";
   const isShotgun = weapon.name === "Shotgun";
+  const isCrossbow = weaponName === "Crossbow";
+  const isFlamethrower = weaponName === "Flamethrower";
+  const isSniper = weaponName === "Sniper";
+  const isRocket = weaponName === "Rocket";
 
   const adsXOffset = isADS ? 0.0 : (isPistol ? 0.4 : isShotgun ? 0.34 : 0.36);
   const adsYOffset = isADS ? -0.2 : (isPistol ? -0.26 : isShotgun ? -0.24 : -0.28);
@@ -3196,8 +3313,8 @@ function updateWeapon(dt) {
 
   const ak = firstPersonWeapon.akHolder;
   const akOk = firstPersonWeapon.akLoadSuccess;
-  const showAk = !isPistol && !isShotgun && akOk;
-  firstPersonWeapon.fallbackGun.visible = !isPistol && !isShotgun && !akOk;
+  const showAk = isRifle && akOk;
+  firstPersonWeapon.fallbackGun.visible = isRifle && !akOk;
 
   const remington = firstPersonWeapon.remingtonHolder;
   const remingtonOk = firstPersonWeapon.remingtonLoadSuccess;
@@ -3213,8 +3330,21 @@ function updateWeapon(dt) {
   if (firstPersonWeapon.pistolGroup) firstPersonWeapon.pistolGroup.visible = showPistolProc;
   if (pistolH) pistolH.visible = showPistolGlb;
 
+  if (firstPersonWeapon.crossbowGroup) firstPersonWeapon.crossbowGroup.visible = isCrossbow;
+  if (firstPersonWeapon.flamethrowerGroup) firstPersonWeapon.flamethrowerGroup.visible = isFlamethrower;
+  if (firstPersonWeapon.sniperGroup) firstPersonWeapon.sniperGroup.visible = isSniper;
+  if (firstPersonWeapon.rocketGroup) firstPersonWeapon.rocketGroup.visible = isRocket;
+
   if (isPistol) {
     firstPersonWeapon.muzzleFlash.position.set(0, 0, -0.56);
+  } else if (isCrossbow) {
+    firstPersonWeapon.muzzleFlash.position.set(0, 0.03, -0.9);
+  } else if (isFlamethrower) {
+    firstPersonWeapon.muzzleFlash.position.set(0, -0.01, -0.78);
+  } else if (isSniper) {
+    firstPersonWeapon.muzzleFlash.position.set(0, 0.02, -1.42);
+  } else if (isRocket) {
+    firstPersonWeapon.muzzleFlash.position.set(0, 0, -1.08);
   } else if (!isShotgun) {
     firstPersonWeapon.muzzleFlash.position.set(0, 0, -1.35);
   }
@@ -5288,6 +5418,228 @@ function updateGrenades(dt) {
   }
 }
 
+// ─── Arrow (Crossbow) ────────────────────────────────────────────────────────
+function spawnArrow(origin, direction, damage) {
+  const group = new THREE.Group();
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.012, 0.012, 0.55, 6),
+    new THREE.MeshStandardMaterial({ color: 0x8b6914, roughness: 0.85, metalness: 0.05 }),
+  );
+  shaft.rotation.x = Math.PI / 2;
+  const head = new THREE.Mesh(
+    new THREE.ConeGeometry(0.022, 0.1, 6),
+    new THREE.MeshStandardMaterial({ color: 0xb0b0b0, roughness: 0.3, metalness: 0.9 }),
+  );
+  head.rotation.x = -Math.PI / 2;
+  head.position.set(0, 0, -0.32);
+  const flights = new THREE.Mesh(
+    new THREE.BoxGeometry(0.001, 0.07, 0.12),
+    new THREE.MeshBasicMaterial({ color: 0xcccccc }),
+  );
+  flights.position.set(0, 0, 0.26);
+  group.add(shaft, head, flights);
+  group.position.copy(origin);
+  const vel = direction.clone().normalize();
+  group.lookAt(origin.clone().add(vel));
+  scene.add(group);
+  arrows.push({
+    mesh: group,
+    velocity: vel.clone().multiplyScalar(88),
+    damage,
+    life: 1.8,
+    stuck: false,
+    stuckTimer: 0,
+  });
+}
+
+function updateArrows(dt) {
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    const a = arrows[i];
+    if (a.stuck) {
+      a.stuckTimer -= dt;
+      if (a.stuckTimer <= 0) {
+        scene.remove(a.mesh);
+        a.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
+        arrows.splice(i, 1);
+      }
+      continue;
+    }
+    a.life -= dt;
+    a.velocity.y += settings.gravity * 0.18 * dt;
+    a.mesh.position.addScaledVector(a.velocity, dt);
+    const dir = a.velocity.clone().normalize();
+    a.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+    if (a.life <= 0) {
+      scene.remove(a.mesh);
+      a.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
+      arrows.splice(i, 1);
+      continue;
+    }
+    let hit = false;
+    for (let zi = zombies.length - 1; zi >= 0; zi--) {
+      const z = zombies[zi];
+      if (a.mesh.position.distanceTo(z.mesh.position) < 0.9) {
+        applyZombieDamage(zi, a.damage, false);
+        triggerHitMarker(false);
+        messageEl.textContent = `Arrow hit! ${a.damage.toFixed(0)} dmg`;
+        a.mesh.position.copy(z.mesh.position).add(new THREE.Vector3(0, 1.2, 0));
+        a.stuck = true;
+        a.stuckTimer = 4;
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) {
+      const floor = terrainHeight(a.mesh.position.x, a.mesh.position.z) + 0.06;
+      if (a.mesh.position.y < floor) {
+        a.mesh.position.y = floor;
+        a.stuck = true;
+        a.stuckTimer = 6;
+      }
+    }
+  }
+}
+
+// ─── Rocket ──────────────────────────────────────────────────────────────────
+function spawnRocket(origin, direction, damage) {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.055, 0.04, 0.42, 10),
+    new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 0.5, metalness: 0.8 }),
+  );
+  body.rotation.x = Math.PI / 2;
+  const nose = new THREE.Mesh(
+    new THREE.ConeGeometry(0.055, 0.18, 10),
+    new THREE.MeshStandardMaterial({ color: 0x88cc44, roughness: 0.4, metalness: 0.6 }),
+  );
+  nose.rotation.x = -Math.PI / 2;
+  nose.position.set(0, 0, -0.3);
+  const finMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.6, metalness: 0.7 });
+  for (let f = 0; f < 4; f++) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.002, 0.09, 0.1), finMat);
+    fin.position.set(
+      Math.sin(f * Math.PI / 2) * 0.06,
+      Math.cos(f * Math.PI / 2) * 0.06,
+      0.22,
+    );
+    group.add(fin);
+  }
+  group.add(body, nose);
+  group.position.copy(origin);
+  const vel = direction.clone().normalize();
+  group.lookAt(origin.clone().add(vel));
+  scene.add(group);
+  rockets.push({
+    mesh: group,
+    velocity: vel.clone().multiplyScalar(52),
+    damage,
+    life: 4.5,
+  });
+}
+
+const _rocketPos = new THREE.Vector3();
+function updateRockets(dt) {
+  for (let i = rockets.length - 1; i >= 0; i--) {
+    const r = rockets[i];
+    r.life -= dt;
+    r.mesh.position.addScaledVector(r.velocity, dt);
+    const dir = r.velocity.clone().normalize();
+    r.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+
+    // Exhaust trail particle
+    if (Math.random() < 0.6) {
+      const trailP = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 4, 4),
+        new THREE.MeshBasicMaterial({ color: 0xff8800, transparent: true, opacity: 0.7 }),
+      );
+      trailP.position.copy(r.mesh.position).addScaledVector(dir, -0.3);
+      scene.add(trailP);
+      particles.push({ mesh: trailP, velocity: new THREE.Vector3((Math.random()-0.5)*1.5, Math.random()*0.8, (Math.random()-0.5)*1.5), life: 0.25, maxLife: 0.25, gravity: false, isExplosion: false });
+    }
+
+    _rocketPos.copy(r.mesh.position);
+    let exploded = r.life <= 0;
+
+    if (!exploded) {
+      const floor = terrainHeight(_rocketPos.x, _rocketPos.z);
+      if (_rocketPos.y < floor + 0.2) exploded = true;
+    }
+    if (!exploded) {
+      for (const z of zombies) {
+        if (_rocketPos.distanceTo(z.mesh.position) < 1.4) { exploded = true; break; }
+      }
+    }
+
+    if (exploded) {
+      scene.remove(r.mesh);
+      r.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
+      rockets.splice(i, 1);
+      createExplosion(_rocketPos, 11, r.damage);
+      addScreenShake(0.55);
+      topCenterAlertEl.textContent = "💥 ROCKET IMPACT!";
+      alertTimer = 1.5;
+    }
+  }
+}
+
+// ─── Flamethrower Puffs ──────────────────────────────────────────────────────
+function spawnFlamePuff(origin, direction) {
+  const spread = 0.18;
+  const dir = direction.clone();
+  dir.x += (Math.random() - 0.5) * spread;
+  dir.y += (Math.random() - 0.5) * spread * 0.5;
+  dir.z += (Math.random() - 0.5) * spread;
+  dir.normalize();
+
+  const color = Math.random() < 0.5 ? 0xff6600 : Math.random() < 0.5 ? 0xff3300 : 0xffaa00;
+  const size = 0.1 + Math.random() * 0.22;
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(size, 5, 5),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.82 }),
+  );
+  mesh.position.copy(origin);
+  scene.add(mesh);
+  flamePuffs.push({
+    mesh,
+    velocity: dir.multiplyScalar(12 + Math.random() * 6),
+    life: 0.38 + Math.random() * 0.22,
+    maxLife: 0.6,
+    damage: 0,
+    damageTickCd: 0,
+  });
+}
+
+const _flameDamagePerSec = 28;
+function updateFlamePuffs(dt) {
+  for (let i = flamePuffs.length - 1; i >= 0; i--) {
+    const f = flamePuffs[i];
+    f.life -= dt;
+    if (f.life <= 0) {
+      scene.remove(f.mesh);
+      f.mesh.geometry?.dispose();
+      f.mesh.material?.dispose();
+      flamePuffs.splice(i, 1);
+      continue;
+    }
+    f.mesh.position.addScaledVector(f.velocity, dt);
+    f.velocity.multiplyScalar(Math.exp(-dt * 3.5));
+    f.mesh.position.y += dt * 0.6;
+    const t = f.life / f.maxLife;
+    f.mesh.material.opacity = t * 0.8;
+    f.mesh.scale.setScalar(1 + (1 - t) * 1.8);
+
+    f.damageTickCd -= dt;
+    if (f.damageTickCd <= 0) {
+      f.damageTickCd = 0.1;
+      for (let zi = zombies.length - 1; zi >= 0; zi--) {
+        if (f.mesh.position.distanceTo(zombies[zi].mesh.position) < 1.2) {
+          applyZombieDamage(zi, _flameDamagePerSec * 0.1);
+        }
+      }
+    }
+  }
+}
+
 // ─── Boss Zombie ──────────────────────────────────────────────────────────────
 function spawnBoss() {
   if (bossAlive || gameOver || gameState !== "PLAYING" || !pointerLocked) return;
@@ -5873,6 +6225,11 @@ function animate(nowMs) {
     }
 
     player.shootCooldown = Math.max(0, player.shootCooldown - dt);
+    // Auto-fire for flamethrower (and any other full-auto weapons) while mouse held
+    if (mouseLeftHeld && pointerLocked && player.shootCooldown === 0 && !gameOver) {
+      const _aw = getActiveWeapon(player);
+      if (_aw.name === "Flamethrower" || _aw.name === "Rifle") shoot();
+    }
     if (activeVehicle) {
       updateVehicles(dt);
       sun.position.x = activeVehicle.mesh.position.x + 30;
@@ -5887,6 +6244,9 @@ function animate(nowMs) {
     updateZombies(dt);
     updateTeammates(dt);
     updateBullets(dt);
+    updateArrows(dt);
+    updateRockets(dt);
+    updateFlamePuffs(dt);
     updatePickups(dt);
     updateGrenades(dt);
     updateMolotovProjectiles(dt);
@@ -5940,12 +6300,15 @@ canvas.addEventListener("click", async () => {
   if (!pointerLocked && gameState !== "PLAYING") canvas.requestPointerLock();
 });
 
+let mouseLeftHeld = false;
 window.addEventListener("mousedown", (e) => {
+  if (e.button === 0) mouseLeftHeld = true;
   if (e.button === 0 && pointerLocked && gameState === "PLAYING") shoot();
   if (e.button === 2 && pointerLocked && gameState === "PLAYING") isADS = true;
 });
 
 window.addEventListener("mouseup", (e) => {
+  if (e.button === 0) mouseLeftHeld = false;
   if (e.button === 2) isADS = false;
 });
 
