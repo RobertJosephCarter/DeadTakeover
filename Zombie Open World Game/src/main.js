@@ -82,6 +82,72 @@ const weaponSlotsEl = document.createElement("div");
 weaponSlotsEl.id = "weapon-slots";
 document.body.appendChild(weaponSlotsEl);
 
+/** Floating damage number container — absolutely positioned DOM elements. */
+const damageNumContainer = document.createElement("div");
+damageNumContainer.id = "damage-numbers";
+damageNumContainer.style.cssText = "position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:15;";
+document.body.appendChild(damageNumContainer);
+
+/** Kill feed — scrolling list of recent kills on the right side. */
+const killFeedEl = document.createElement("div");
+killFeedEl.id = "kill-feed";
+killFeedEl.style.cssText = "position:fixed;top:50%;right:12px;transform:translateY(-50%);pointer-events:none;z-index:13;display:flex;flex-direction:column-reverse;gap:3px;max-height:260px;overflow:hidden;";
+document.body.appendChild(killFeedEl);
+const killFeedEntries = [];
+
+function addKillFeedEntry(text, color = "#ffdd88") {
+  const div = document.createElement("div");
+  div.textContent = text;
+  div.style.cssText = `color:${color};font-size:11px;font-weight:600;font-family:'Segoe UI',sans-serif;background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.15);border-radius:4px;padding:2px 7px;text-shadow:0 1px 2px rgba(0,0,0,0.9);opacity:1;transition:opacity 0.5s ease;`;
+  killFeedEl.prepend(div);
+  const entry = { el: div, life: 5 };
+  killFeedEntries.push(entry);
+  if (killFeedEntries.length > 7) {
+    const old = killFeedEntries.shift();
+    old.el.remove();
+  }
+}
+
+function updateKillFeed(dt) {
+  for (let i = killFeedEntries.length - 1; i >= 0; i--) {
+    const e = killFeedEntries[i];
+    e.life -= dt;
+    if (e.life < 1) e.el.style.opacity = `${Math.max(0, e.life)}`;
+    if (e.life <= 0) { e.el.remove(); killFeedEntries.splice(i, 1); }
+  }
+}
+
+/** Reload progress bar shown below crosshair. */
+const reloadBarEl = document.createElement("div");
+reloadBarEl.style.cssText = "position:fixed;left:50%;top:calc(50% + 22px);transform:translateX(-50%);width:80px;height:4px;background:rgba(0,0,0,0.55);border-radius:999px;border:1px solid rgba(255,255,255,0.2);pointer-events:none;z-index:15;opacity:0;transition:opacity 0.12s ease;";
+reloadBarEl.innerHTML = '<div id="reload-bar-fill" style="height:100%;background:linear-gradient(90deg,#f7c948,#ffe080);border-radius:999px;width:0%;transition:none;"></div>';
+document.body.appendChild(reloadBarEl);
+const reloadBarFillEl = reloadBarEl.querySelector("#reload-bar-fill");
+
+/** Health bar overlay canvas for special/boss zombies. */
+const hpBarCanvas = document.createElement("canvas");
+hpBarCanvas.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:14;";
+document.body.appendChild(hpBarCanvas);
+const hpBarCtx = hpBarCanvas.getContext("2d");
+function resizeHpBarCanvas() {
+  hpBarCanvas.width = window.innerWidth;
+  hpBarCanvas.height = window.innerHeight;
+}
+resizeHpBarCanvas();
+window.addEventListener("resize", resizeHpBarCanvas);
+
+/** Active floating damage number entries. */
+const floatingDamageNums = [];
+
+/** Vehicle HP bar element shown when driving. */
+const vehicleHudEl = document.createElement("div");
+vehicleHudEl.id = "vehicle-hud";
+vehicleHudEl.style.cssText = "position:fixed;bottom:140px;left:50%;transform:translateX(-50%);pointer-events:none;display:none;z-index:15;";
+vehicleHudEl.innerHTML = `<div style="background:rgba(12,18,12,0.8);border:1px solid rgba(196,218,165,0.38);border-radius:8px;padding:7px 14px;text-align:center;color:#eaf5dd;font-size:12px;min-width:160px;"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;opacity:.8;margin-bottom:4px;">Vehicle</div><div id="vehicle-hp-label" style="font-weight:700;margin-bottom:4px;">HP 100 / 100</div><div style="height:8px;border-radius:999px;background:rgba(34,45,30,0.9);border:1px solid rgba(220,238,196,0.18);overflow:hidden;"><div id="vehicle-hp-fill" style="height:100%;background:linear-gradient(90deg,#8b1a1a,#d94040);transition:width .12s linear;width:100%;"></div></div></div>`;
+document.body.appendChild(vehicleHudEl);
+const vehicleHpLabelEl = vehicleHudEl.querySelector("#vehicle-hp-label");
+const vehicleHpFillEl = vehicleHudEl.querySelector("#vehicle-hp-fill");
+
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x6a7862, 60, 260);
 
@@ -3105,6 +3171,11 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
   zombie.hp -= finalDamage;
   playSfx("zombie_hit", Math.min(1.3, finalDamage / 22));
   spawnBloodParticles(zombie.mesh.position, isHeadshot ? 10 : 5);
+  if (damageAmount > 0) {
+    const dmgPos = zombie.mesh.position.clone();
+    dmgPos.y += 2.4 + (zombie.isBoss ? 0.8 : 0);
+    spawnFloatingDamage(dmgPos, finalDamage, isHeadshot);
+  }
   if (zombie.hp <= 0) {
     const pos = zombie.mesh.position.clone();
     const wasBoss = zombie.isBoss;
@@ -3162,15 +3233,19 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
       grenadeCount = Math.min(grenadeCount + 2, 6);
       skillPoints += 2;
       messageEl.textContent = "Boss down! +2 grenades, +2 skill points!";
+      addKillFeedEntry("💀 BOSS DOWN +500pts", "#ff6600");
     } else {
       score += isHeadshot ? 150 : 50;
+      const label = isHeadshot ? `💀 ${zombieType} HEADSHOT! +150` : `💀 ${zombieType} +50`;
+      const color = isHeadshot ? "#ff4444" : (isSpecial ? "#ffaa44" : "#ffdd88");
+      addKillFeedEntry(label, color);
     }
     killStreak += 1;
     killStreakTimer = 4.5;
-    if (killStreak === 5) { topCenterAlertEl.textContent = "🔥 KILLING SPREE! x5"; alertTimer = 2; }
-    else if (killStreak === 10) { topCenterAlertEl.textContent = "🔥 RAMPAGE! x10 +bonus"; alertTimer = 2.5; score += 200; }
-    else if (killStreak === 20) { topCenterAlertEl.textContent = "🔥 UNSTOPPABLE! x20 +bonus"; alertTimer = 3; score += 500; }
-    else if (killStreak === 30) { topCenterAlertEl.textContent = "🔥 GODLIKE! x30 +bonus"; alertTimer = 3; score += 1000; }
+    if (killStreak === 5) { topCenterAlertEl.textContent = "🔥 KILLING SPREE! x5"; alertTimer = 2; addKillFeedEntry("🔥 KILLING SPREE x5!", "#ff9900"); }
+    else if (killStreak === 10) { topCenterAlertEl.textContent = "🔥 RAMPAGE! x10 +bonus"; alertTimer = 2.5; score += 200; addKillFeedEntry("🔥 RAMPAGE x10 +200pts!", "#ff6600"); }
+    else if (killStreak === 20) { topCenterAlertEl.textContent = "🔥 UNSTOPPABLE! x20 +bonus"; alertTimer = 3; score += 500; addKillFeedEntry("🔥 UNSTOPPABLE x20 +500pts!", "#ff3300"); }
+    else if (killStreak === 30) { topCenterAlertEl.textContent = "🔥 GODLIKE! x30 +bonus"; alertTimer = 3; score += 1000; addKillFeedEntry("🔥 GODLIKE x30 +1000pts!", "#ff0000"); }
   }
 }
 
@@ -3610,6 +3685,7 @@ function updateZombies(dt) {
     } else if (zombie.type === "screamer") {
       // Screamer tries to maintain distance, then screams and spawns zombies
       zombie.screamCooldown -= dt;
+      if (zombie.hasScreamed && zombie.screamCooldown <= 0) zombie.hasScreamed = false;
       if (distance < 30 && distance > 10 && zombie.screamCooldown <= 0 && !zombie.hasScreamed) {
         zombie.screamCooldown = 8 + Math.random() * 4;
         zombie.hasScreamed = true;
@@ -3905,6 +3981,7 @@ function buildBarricade() {
   visionBlockers.push(panel);
   messageEl.textContent = `${buildType.charAt(0).toUpperCase() + buildType.slice(1)} barricade built!`;
   playSfx("ui_click", 1.2);
+  showBuildHint();
 }
 
 function updateBarricades(dt) {
@@ -3924,6 +4001,18 @@ function updateBarricades(dt) {
 function switchBuildType() {
   buildType = buildType === "wood" ? "metal" : "wood";
   messageEl.textContent = `Build mode: ${buildType.toUpperCase()} (B to build, N to switch)`;
+  showBuildHint();
+}
+
+function showBuildHint() {
+  if (!buildHintEl) return;
+  const cost = buildType === "wood"
+    ? `Wood ×3 (have: ${materials.wood})`
+    : `Metal ×2 + Scrap ×1 (have: M:${materials.metal} S:${materials.scrap})`;
+  buildHintEl.textContent = `[B] Build ${buildType.toUpperCase()} barricade — Cost: ${cost}  [N] Switch type`;
+  buildHintEl.style.opacity = "1";
+  clearTimeout(showBuildHint._timer);
+  showBuildHint._timer = setTimeout(() => { if (buildHintEl) buildHintEl.style.opacity = "0"; }, 3500);
 }
 
 // ─── Upgrade Bench ───────────────────────────────────────────────────────────
@@ -3969,6 +4058,27 @@ function updateHUDMaterials() {
     const materialStr = `S:${m.scrap} W:${m.wood} M:${m.metal} C:${m.cloth} Ch:${m.chemicals}`;
     extraMetaEl.textContent = `💣 ${grenadeCount} | 📢 ${noiseMakerCount} | ${materialStr} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}${buildMode ? ` | [BUILD:${buildType.toUpperCase()}]` : ""}`;
   }
+}
+
+function updateVehicleHud() {
+  if (!activeVehicle || activeVehicle.destroyed) {
+    vehicleHudEl.style.display = "none";
+    return;
+  }
+  vehicleHudEl.style.display = "block";
+  const hp = Math.max(0, activeVehicle.hp || 0);
+  const maxHp = activeVehicle.maxHp || 100;
+  const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
+  const fuel = Math.max(0, activeVehicle.fuel || 0);
+  const maxFuel = activeVehicle.maxFuel || 100;
+  const fuelPct = Math.max(0, Math.min(100, (fuel / maxFuel) * 100));
+  vehicleHpLabelEl.textContent = `${activeVehicle.type.toUpperCase()} — HP ${Math.ceil(hp)}/${maxHp}  Fuel ${Math.ceil(fuelPct)}%`;
+  vehicleHpFillEl.style.width = `${pct}%`;
+  vehicleHpFillEl.style.background = pct > 60
+    ? "linear-gradient(90deg,#1a6a1a,#3dba3d)"
+    : pct > 30
+      ? "linear-gradient(90deg,#7a5a00,#dba820)"
+      : "linear-gradient(90deg,#8b1a1a,#d94040)";
 }
 
 // ─── Zombie hits barricades ──────────────────────────────────────────────────
@@ -4211,6 +4321,57 @@ function drawMinimap() {
       minimapCtx.fill();
     }
   }
+
+  // Supply drops — yellow star
+  for (const drop of supplyDrops) {
+    const relX = drop.mesh.position.x - player.position.x;
+    const relZ = drop.mesh.position.z - player.position.z;
+    const rx = (relX / worldRadius) * (center - 12);
+    const rz = (relZ / worldRadius) * (center - 12);
+    if (Math.hypot(rx, rz) < center - 10) {
+      minimapCtx.fillStyle = drop.dropType === "weapon_crate" ? "#66aaff" : "#ffdd00";
+      minimapCtx.beginPath();
+      minimapCtx.arc(rx, rz, 4, 0, Math.PI * 2);
+      minimapCtx.fill();
+      minimapCtx.strokeStyle = "#ffffff";
+      minimapCtx.lineWidth = 1;
+      minimapCtx.stroke();
+    }
+  }
+
+  // Stranded survivor — green diamond
+  if (isSurvivorAlive(eventDirector) && eventDirector.survivorPosition) {
+    const sp = eventDirector.survivorPosition;
+    const relX = sp.x - player.position.x;
+    const relZ = sp.z - player.position.z;
+    const rx = (relX / worldRadius) * (center - 12);
+    const rz = (relZ / worldRadius) * (center - 12);
+    if (Math.hypot(rx, rz) < center - 10) {
+      minimapCtx.save();
+      minimapCtx.translate(rx, rz);
+      minimapCtx.rotate(Math.PI / 4);
+      minimapCtx.fillStyle = "#44ff88";
+      minimapCtx.fillRect(-3.5, -3.5, 7, 7);
+      minimapCtx.restore();
+    }
+  }
+
+  // Zombie corpses about to revive — orange dot (only when < 6s remaining)
+  for (const corpse of zombieCorpses) {
+    if (corpse.reviveTimer > 6) continue;
+    const relX = corpse.mesh.position.x - player.position.x;
+    const relZ = corpse.mesh.position.z - player.position.z;
+    const rx = (relX / worldRadius) * (center - 12);
+    const rz = (relZ / worldRadius) * (center - 12);
+    if (Math.hypot(rx, rz) < center - 10) {
+      const pulse = 0.5 + 0.5 * Math.sin(gameTime * 6);
+      minimapCtx.fillStyle = `rgba(255,${Math.round(80 + 80 * pulse)},0,${0.6 + 0.4 * pulse})`;
+      minimapCtx.beginPath();
+      minimapCtx.arc(rx, rz, 2.5, 0, Math.PI * 2);
+      minimapCtx.fill();
+    }
+  }
+
   minimapCtx.restore();
 }
 
@@ -4224,7 +4385,7 @@ function updateHud(dt) {
   const wpnNum = `[${player.activeWeapon + 1}]`;
   const wpnUpg = activeWpn.upgrades && Object.keys(activeWpn.upgrades).length > 0 ? " +" : "";
   statsMetaEl.textContent = `Map: ${activeMapConfig.name} | ${activeWpn.name}${wpnUpg} ${wpnNum} | ${ammoLabel} | Kills: ${player.kills} | Zombies: ${zombies.length} | Team: ${teammates.length + 1}`;
-  if (extraMetaEl) extraMetaEl.textContent = `💣 ${grenadeCount} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}`;
+  updateHUDMaterials();
   if (skillMetaEl) {
     const activeSkills = Object.values(skills)
       .filter((s) => s.level > 0)
@@ -4251,6 +4412,17 @@ function updateHud(dt) {
     killStreakEl.textContent = killStreak >= 3 ? `🔥 ×${killStreak} streak!` : "";
     killStreakEl.style.opacity = killStreak >= 3 ? "1" : "0";
   }
+  // Reload bar
+  if (player.reloadTimer > 0) {
+    const weapon = getActiveWeapon(player);
+    const reloadTotal = (weapon.reloadTime || 1.25) * (1 - (skills?.reloadSpeed?.value || 0));
+    const progress = Math.max(0, Math.min(1, 1 - player.reloadTimer / reloadTotal));
+    reloadBarFillEl.style.width = `${progress * 100}%`;
+    reloadBarEl.style.opacity = "1";
+  } else {
+    reloadBarEl.style.opacity = "0";
+  }
+  updateKillFeed(dt);
   renderWeaponSlotsHUD();
   renderMissionListHUD();
 }
@@ -4286,6 +4458,141 @@ function renderWeaponSlotsHUD() {
     div.className = "weapon-slot" + (isActive ? " is-active" : "");
     div.innerHTML = `<span class="weapon-slot-key">${slotMap[i] || i + 1}</span><span class="weapon-slot-name">${w.name}</span><span class="weapon-slot-ammo">${w.ammo}/${w.reserve}</span>`;
     weaponSlotsEl.appendChild(div);
+  }
+}
+
+// ─── Enemy Health Bars ────────────────────────────────────────────────────────
+const _hpProjVec = new THREE.Vector3();
+function drawEnemyHealthBars() {
+  hpBarCtx.clearRect(0, 0, hpBarCanvas.width, hpBarCanvas.height);
+  if (gameState !== "PLAYING" || gameOver) return;
+  const w = hpBarCanvas.width;
+  const h = hpBarCanvas.height;
+  const barW = 42;
+  const barH = 5;
+  for (const zombie of zombies) {
+    const showBar = zombie.isSpecial || zombie.isBoss || zombie.type === "juggernaut" || zombie.type === "boomer" || zombie.type === "screamer";
+    if (!showBar) continue;
+    // Only draw if within visual range
+    const dist = zombie.mesh.position.distanceTo(player.position);
+    if (dist > 40) continue;
+    const headY = zombie.isBoss ? 2.55 : 2.55;
+    _hpProjVec.set(zombie.mesh.position.x, zombie.mesh.position.y + headY, zombie.mesh.position.z);
+    _hpProjVec.project(camera);
+    if (_hpProjVec.z > 1 || _hpProjVec.z < -1) continue;
+    const sx = (_hpProjVec.x * 0.5 + 0.5) * w;
+    const sy = (-_hpProjVec.y * 0.5 + 0.5) * h;
+    if (sx < -barW || sx > w + barW || sy < 0 || sy > h) continue;
+
+    const pct = Math.max(0, zombie.hp / zombie.maxHp);
+    const bx = sx - barW / 2;
+    const by = sy - barH - 4;
+
+    // Background
+    hpBarCtx.fillStyle = "rgba(0,0,0,0.6)";
+    hpBarCtx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
+    // HP fill colour
+    const r = Math.round(255 * (1 - pct));
+    const g = Math.round(200 * pct);
+    hpBarCtx.fillStyle = zombie.isBoss ? `rgb(255,${g},0)` : `rgb(${r},${g},0)`;
+    hpBarCtx.fillRect(bx, by, barW * pct, barH);
+    // Border
+    hpBarCtx.strokeStyle = "rgba(255,255,255,0.35)";
+    hpBarCtx.lineWidth = 0.5;
+    hpBarCtx.strokeRect(bx - 0.5, by - 0.5, barW + 1, barH + 1);
+    // Label for boss
+    if (zombie.isBoss) {
+      hpBarCtx.fillStyle = "rgba(255,200,80,0.9)";
+      hpBarCtx.font = "bold 9px sans-serif";
+      hpBarCtx.textAlign = "center";
+      hpBarCtx.fillText("BOSS", sx, by - 3);
+    }
+  }
+
+  // Barricade health bars — only show when damaged
+  const bBarW = 38;
+  const bBarH = 4;
+  for (const barricade of barricades) {
+    if (barricade.hp >= barricade.maxHp) continue;
+    const dist = barricade.mesh.position.distanceTo(player.position);
+    if (dist > 25) continue;
+    _hpProjVec.set(barricade.mesh.position.x, barricade.mesh.position.y + 2.2, barricade.mesh.position.z);
+    _hpProjVec.project(camera);
+    if (_hpProjVec.z > 1) continue;
+    const sx = (_hpProjVec.x * 0.5 + 0.5) * w;
+    const sy = (-_hpProjVec.y * 0.5 + 0.5) * h;
+    if (sx < 0 || sx > w || sy < 0 || sy > h) continue;
+    const pct = Math.max(0, barricade.hp / barricade.maxHp);
+    const bx = sx - bBarW / 2;
+    const by = sy - bBarH - 2;
+    hpBarCtx.fillStyle = "rgba(0,0,0,0.55)";
+    hpBarCtx.fillRect(bx - 1, by - 1, bBarW + 2, bBarH + 2);
+    hpBarCtx.fillStyle = barricade.type === "metal"
+      ? `rgba(${Math.round(80 + 175 * (1 - pct))},${Math.round(180 * pct)},200,0.9)`
+      : `rgba(${Math.round(200 + 55 * (1 - pct))},${Math.round(160 * pct)},40,0.9)`;
+    hpBarCtx.fillRect(bx, by, bBarW * pct, bBarH);
+    hpBarCtx.strokeStyle = "rgba(255,255,255,0.25)";
+    hpBarCtx.lineWidth = 0.5;
+    hpBarCtx.strokeRect(bx - 0.5, by - 0.5, bBarW + 1, bBarH + 1);
+  }
+}
+
+// ─── Floating Damage Numbers ──────────────────────────────────────────────────
+const _projVec = new THREE.Vector3();
+function spawnFloatingDamage(worldPosition, amount, isHeadshot = false) {
+  if (!amount || amount <= 0) return;
+  const el = document.createElement("div");
+  const rounded = Math.round(amount);
+  el.textContent = isHeadshot ? `${rounded}!` : `${rounded}`;
+  el.style.cssText = [
+    "position:absolute",
+    "font-family:'Segoe UI',sans-serif",
+    `font-size:${isHeadshot ? "16px" : "13px"}`,
+    `font-weight:${isHeadshot ? "900" : "700"}`,
+    `color:${isHeadshot ? "#ff4444" : "#ffdd88"}`,
+    "text-shadow:0 1px 3px rgba(0,0,0,0.9)",
+    "pointer-events:none",
+    "user-select:none",
+    "white-space:nowrap",
+    "will-change:transform,opacity",
+  ].join(";");
+  damageNumContainer.appendChild(el);
+
+  // Project world position to screen
+  _projVec.copy(worldPosition).project(camera);
+  const sx = (_projVec.x * 0.5 + 0.5) * window.innerWidth;
+  const sy = (-_projVec.y * 0.5 + 0.5) * window.innerHeight;
+
+  const entry = {
+    el,
+    x: sx + (Math.random() - 0.5) * 18,
+    y: sy,
+    vy: -52,
+    life: 0,
+    maxLife: isHeadshot ? 0.9 : 0.7,
+    worldPos: worldPosition.clone(),
+  };
+  floatingDamageNums.push(entry);
+}
+
+function updateFloatingDamageNums(dt) {
+  for (let i = floatingDamageNums.length - 1; i >= 0; i--) {
+    const n = floatingDamageNums[i];
+    n.life += dt;
+    if (n.life >= n.maxLife) {
+      n.el.remove();
+      floatingDamageNums.splice(i, 1);
+      continue;
+    }
+    // Re-project to follow the world position (handles camera movement)
+    _projVec.copy(n.worldPos).project(camera);
+    if (_projVec.z > 1) { n.el.style.opacity = "0"; continue; }
+    const sx = (_projVec.x * 0.5 + 0.5) * window.innerWidth;
+    const sy = (-_projVec.y * 0.5 + 0.5) * window.innerHeight;
+    const t = n.life / n.maxLife;
+    const offsetY = n.vy * n.life;
+    n.el.style.transform = `translate(${sx - 16}px, ${sy + offsetY - 20}px)`;
+    n.el.style.opacity = `${1 - t * t}`;
   }
 }
 
@@ -5272,9 +5579,11 @@ function animate(nowMs) {
     camera.position.z += (Math.random() - 0.5) * sh;
   }
   updateWeapon(dt);
-  updateHUDMaterials();
   updateHud(dt);
+  updateFloatingDamageNums(dt);
+  updateVehicleHud();
   renderer.render(scene, camera);
+  drawEnemyHealthBars();
   requestAnimationFrame(animate);
 }
 
