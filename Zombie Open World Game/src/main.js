@@ -1035,7 +1035,7 @@ function setAudioScene(mode) {
 function setMenuMode(mode) {
   if (mode === "title") {
     gameState = "MENU_TITLE";
-    menuTitleEl.textContent = "Zombie Squad";
+    menuTitleEl.textContent = "DeadTakeover";
     menuSubtitleEl.textContent = "Survive with your teammates.";
     startBtnEl.classList.remove("is-hidden");
     resumeBtnEl.classList.add("is-hidden");
