@@ -41,8 +41,14 @@ export function createEventDirector() {
   };
 }
 
-export function updateEventDirector(director, dt, player, zombies, scene, terrainHeight, worldSize = 200) {
+export function updateEventDirector(director, dt, player, zombies, scene, terrainHeight) {
   director.timer += dt;
+
+  // Reset zombie stats to base before applying temporary zone buffs
+  for (const zombie of zombies) {
+    if (zombie.baseSpeed !== undefined) zombie.speed = zombie.baseSpeed;
+    if (zombie.baseDamage !== undefined) zombie.damage = zombie.baseDamage;
+  }
 
   // Update toxic zones
   for (let i = director.toxicZones.length - 1; i >= 0; i--) {
@@ -65,6 +71,8 @@ export function updateEventDirector(director, dt, player, zombies, scene, terrai
     }
   }
 
+  let result = null;
+
   // Update stranded survivor
   if (director.survivorActive) {
     director.survivorTimer -= dt;
@@ -75,7 +83,7 @@ export function updateEventDirector(director, dt, player, zombies, scene, terrai
         disposeSurvivor(director.survivorMesh);
         director.survivorMesh = null;
       }
-      return { type: "survivor_end", success: director.survivorHP > 0 };
+      result = { type: "survivor_end", success: director.survivorHP > 0 };
     }
   }
 
@@ -88,10 +96,10 @@ export function updateEventDirector(director, dt, player, zombies, scene, terrai
     return { type: "trigger", eventType };
   }
 
-  return null;
+  return result;
 }
 
-export function executeEvent(eventType, director, player, scene, terrainHeight, addZombieFn, spawnDropFn, worldSize = 200) {
+export function executeEvent(eventType, director, player, scene, terrainHeight, addZombieFn, spawnDropFn) {
   switch (eventType) {
     case EVENT_TYPES.HORDE_RUSH: {
       const angle = Math.random() * Math.PI * 2;

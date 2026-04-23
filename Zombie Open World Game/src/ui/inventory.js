@@ -37,10 +37,10 @@ export function createInventoryOverlay() {
   };
 }
 
-export function showInventory(inventoryUI, materials, player, hooks = {}) {
+export function showInventory(inventoryUI, materials, player, skills, hooks = {}) {
   inventoryUI.overlay.classList.remove("is-hidden");
   renderMaterials(inventoryUI.materialsGrid, materials);
-  renderRecipes(inventoryUI.recipesGrid, materials, player, inventoryUI, hooks);
+  renderRecipes(inventoryUI.recipesGrid, materials, player, skills, inventoryUI, hooks);
 }
 
 export function hideInventory(inventoryUI) {
@@ -65,7 +65,7 @@ function renderMaterials(grid, materials) {
   }
 }
 
-function renderRecipes(grid, materials, player, inventoryUI, hooks) {
+function renderRecipes(grid, materials, player, skills, inventoryUI, hooks) {
   grid.innerHTML = "";
   for (const recipe of RECIPES) {
     const canAfford = canAffordRecipe(recipe, materials);
@@ -85,9 +85,9 @@ function renderRecipes(grid, materials, player, inventoryUI, hooks) {
 
     if (canAfford) {
       card.querySelector(".recipe-btn").addEventListener("click", () => {
-        craftRecipe(recipe, materials, player, hooks);
+        craftRecipe(recipe, materials, player, skills, hooks);
         renderMaterials(inventoryUI.materialsGrid, materials);
-        renderRecipes(inventoryUI.recipesGrid, materials, player, inventoryUI, hooks);
+        renderRecipes(inventoryUI.recipesGrid, materials, player, skills, inventoryUI, hooks);
       });
     }
     grid.appendChild(card);
@@ -101,12 +101,13 @@ function canAffordRecipe(recipe, materials) {
   return true;
 }
 
-function craftRecipe(recipe, materials, player, hooks) {
+function craftRecipe(recipe, materials, player, skills, hooks) {
   for (const [mat, amt] of Object.entries(recipe.cost)) {
     materials[mat] -= amt;
   }
   if (recipe.heal) {
-    player.hp = Math.min(player.hp + recipe.heal, 100 + (player.skills?.health?.value || 0) * 15);
+    const maxHp = 100 + (skills?.health?.value || 0) * 100;
+    player.hp = Math.min(player.hp + recipe.heal, maxHp);
   }
   // Ammo pack: add a flat chunk of reserve so it always does something useful.
   if (recipe.id === "ammo_pack" && player.weapons && player.weapons[player.activeWeapon]) {

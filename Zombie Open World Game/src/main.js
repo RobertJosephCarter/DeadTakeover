@@ -155,6 +155,7 @@ const vehicleHpLabelEl = vehicleHudEl.querySelector("#vehicle-hp-label");
 const vehicleHpFillEl = vehicleHudEl.querySelector("#vehicle-hp-fill");
 
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x4a5a52);
 scene.fog = new THREE.Fog(0x6a7862, 60, 260);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
@@ -436,7 +437,7 @@ const _pGeoDebris = new THREE.SphereGeometry(0.07, 4, 4);
 [_pGeoBlood, _pGeoFire, _pGeoSpark, _pGeoDebris].forEach(g => { g.userData.preventDispose = true; });
 
 /** Reusable Vector3 pool to reduce per-frame GC pressure. */
-const _v3Pool = Array.from({ length: 8 }, () => new THREE.Vector3());
+const _v3Pool = Array.from({ length: 64 }, () => new THREE.Vector3());
 let _v3Index = 0;
 function getV3() {
   _v3Index = (_v3Index + 1) % _v3Pool.length;
@@ -731,6 +732,11 @@ let hitMarkerPulse = 0;
 let hitMarkerHeadshotTimer = 0;
 let hitStopTimer = 0;
 let hitStopCooldown = 0;
+let lastStreamChunkX = Number.NaN;
+let lastStreamChunkZ = Number.NaN;
+let minimapRefreshTimer = 0;
+let weaponHudRefreshTimer = 0;
+let missionHudRefreshTimer = 0;
 const playerProgression = loadProgression();
 
 /** Scavenging / Crafting materials */
@@ -1363,7 +1369,7 @@ function saveRun() {
     spikeTrapCount,
     noiseMakerCount,
     activeMapId: activeMapConfig.id,
-    weapons: player.weapons.map(w => ({ name: w.name, ammo: w.ammo, reserve: w.reserve })),
+    weapons: player.weapons.map(w => ({ name: w.name, ammo: w.ammo, reserve: w.reserve, upgrades: w.upgrades })),
     activeWeapon: player.activeWeapon,
     timestamp: Date.now(),
   };
@@ -1377,33 +1383,36 @@ function loadRun() {
   if (!raw) return false;
   try {
     const save = JSON.parse(raw);
-    wave = save.wave || 1;
-    score = save.score || 0;
-    player.kills = save.playerKills || 0;
-    player.hp = save.playerHp || 100;
-    player.stamina = save.playerStamina || 100;
-    gameTime = save.gameTime || 0;
+    wave = save.wave ?? 1;
+    score = save.score ?? 0;
+    player.kills = save.playerKills ?? 0;
+    player.hp = save.playerHp ?? 100;
+    player.stamina = save.playerStamina ?? 100;
+    gameTime = save.gameTime ?? 0;
     Object.assign(materials, save.materials || materials);
     Object.keys(skills).forEach(k => {
       if (save.skills && save.skills[k]) {
-        skills[k].level = save.skills[k].level || 0;
-        skills[k].value = save.skills[k].value || 0;
+        skills[k].level = save.skills[k].level ?? 0;
+        skills[k].value = save.skills[k].value ?? 0;
       }
     });
-    skillPoints = save.skillPoints || 0;
-    skillXp = save.skillXp || 0;
-    grenadeCount = save.grenadeCount || 3;
-    molotovCount = save.molotovCount || 0;
-    landMineCount = save.landMineCount || 0;
-    spikeTrapCount = save.spikeTrapCount || 0;
-    noiseMakerCount = save.noiseMakerCount || 2;
+    skillPoints = save.skillPoints ?? 0;
+    skillXp = save.skillXp ?? 0;
+    grenadeCount = save.grenadeCount ?? 3;
+    molotovCount = save.molotovCount ?? 0;
+    landMineCount = save.landMineCount ?? 0;
+    spikeTrapCount = save.spikeTrapCount ?? 0;
+    noiseMakerCount = save.noiseMakerCount ?? 2;
     if (save.weapons) {
       for (let i = 0; i < Math.min(save.weapons.length, player.weapons.length); i++) {
-        player.weapons[i].ammo = save.weapons[i].ammo;
-        player.weapons[i].reserve = save.weapons[i].reserve;
+        player.weapons[i].ammo = save.weapons[i].ammo ?? player.weapons[i].ammo;
+        player.weapons[i].reserve = save.weapons[i].reserve ?? player.weapons[i].reserve;
+        if (save.weapons[i].upgrades) {
+          player.weapons[i].upgrades = { ...save.weapons[i].upgrades };
+        }
       }
     }
-    player.activeWeapon = save.activeWeapon || 0;
+    player.activeWeapon = save.activeWeapon ?? 0;
     syncPlayerAmmoFields(player);
     waveSpawnBudget = 18 + wave * 8;
     settings.maxZombies = Math.min(80, 24 + wave * 5);
@@ -2617,11 +2626,15 @@ function resetWorldForNewMap() {
   player.moveVelocity.set(0, 0, 0);
   player.damageFlash = 0;
   player.reloadTimer = 0;
+  // Force a fresh stream pass after teleport/reset.
+  lastStreamChunkX = Number.NaN;
+  lastStreamChunkZ = Number.NaN;
   player.shootCooldown = 0;
   player.bobTime = 0;
   player.activeWeapon = 0;
   mouseLeftHeld = false;
   keys.clear();
+  gameState = "MENU_TITLE";
   gameOver = false;
   paused = false;
   inventoryOpen = false;
@@ -2632,12 +2645,12 @@ function resetWorldForNewMap() {
   spawnTimer = 0;
   gameTime = 0;
   player.kills = 0;
-  player.weapons[0].ammo = 20;
-  player.weapons[0].reserve = 120;
-  player.weapons[1].ammo = 12;
-  player.weapons[1].reserve = 84;
-  player.weapons[2].ammo = 6;
-  player.weapons[2].reserve = 30;
+  const defaults = initDefaultWeapons();
+  for (let i = 0; i < Math.min(player.weapons.length, defaults.length); i++) {
+    player.weapons[i].ammo = defaults[i].ammo;
+    player.weapons[i].reserve = defaults[i].reserve;
+    player.weapons[i].upgrades = {};
+  }
   syncPlayerAmmoFields(player);
   score = 0;
   killStreak = 0;
@@ -2741,9 +2754,43 @@ function resetWorldForNewMap() {
   materials.scrap = 0; materials.wood = 0; materials.metal = 0;
   materials.cloth = 0; materials.chemicals = 0;
 
+  // Reset event director state
+  eventDirector.timer = 0;
+  eventDirector.nextEventIn = 45 + Math.random() * 60;
+  eventDirector.activeEvent = null;
+  eventDirector.eventData = {};
+  eventDirector.survivorTimer = 0;
+  eventDirector.survivorActive = false;
+  eventDirector.survivorPosition = null;
+  eventDirector.survivorHP = 0;
+  if (eventDirector.survivorMesh) {
+    scene.remove(eventDirector.survivorMesh);
+    eventDirector.survivorMesh.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry?.dispose();
+        if (obj.material?.dispose) obj.material.dispose();
+      }
+    });
+    eventDirector.survivorMesh = null;
+  }
+  for (const zone of eventDirector.toxicZones) {
+    scene.remove(zone.mesh);
+    zone.mesh.geometry?.dispose();
+    zone.mesh.material?.dispose();
+  }
+  eventDirector.toxicZones = [];
+
+  // Reset mission generator state
+  missionGenerator.activeMissions = [];
+  missionGenerator.completedMissions = 0;
+  missionGenerator.nextMissionId = 1;
+  missionGenerator.timer = 0;
+  missionGenerator.nextMissionIn = 30 + Math.random() * 30;
+
   applyActiveMapVisuals();
   ensureChunks();
   initWeather();
+  updateDayNight();
   for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
   for (let i = 0; i < 3; i += 1) {
     teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplateRef, remingtonTemplateRef, pistolTemplateRef));
@@ -2751,6 +2798,7 @@ function resetWorldForNewMap() {
 }
 
 function addZombie(x, z, forceType = null) {
+  if (zombies.length >= settings.maxZombies) return null;
   const roll = Math.random();
   // Special infected chance increases with wave; new types appear from wave 3+
   const specialChance = Math.min(0.30, wave * 0.025);
@@ -2918,6 +2966,8 @@ function addZombie(x, z, forceType = null) {
     maxHp,
     speed,
     damage,
+    baseSpeed: speed,
+    baseDamage: damage,
     walkPhase: Math.random() * Math.PI * 2,
     attackTimer: 0,
     wanderSeed: Math.random() * 1000,
@@ -3000,7 +3050,7 @@ function exitVehicle() {
   v.occupied = false;
   v.driver = null;
   // Place player beside vehicle
-  const side = _tempVec1.set(Math.cos(v.yaw + Math.PI / 2), 0, Math.sin(v.yaw + Math.PI / 2));
+  const side = new THREE.Vector3(Math.cos(v.yaw + Math.PI / 2), 0, Math.sin(v.yaw + Math.PI / 2));
   player.position.copy(v.mesh.position).addScaledVector(side, 2.5);
   player.position.y = terrainHeight(player.position.x, player.position.z) + 1.8;
   activeVehicle = null;
@@ -3815,6 +3865,7 @@ function updateTeammates(dt) {
       if (fallback >= 0 && mate.weapons[preferredWeapon].ammo <= 0 && mate.weapons[preferredWeapon].reserve <= 0) {
         preferredWeapon = fallback;
       }
+      if (preferredWeapon < 0 || preferredWeapon >= mate.weapons.length) preferredWeapon = mate.activeWeapon;
       mate.activeWeapon = preferredWeapon;
       const weapon = mate.weapons[mate.activeWeapon];
       if (d2 > weapon.preferredRange * weapon.preferredRange && mate.mesh.position.distanceToSquared(player.position) < 14 * 14) {
@@ -3956,13 +4007,11 @@ function updateZombies(dt) {
     }
     // Fire puddles damage zombies
     if (puddle.isFire) {
-      for (const z of zombies) {
-        if (z.mesh.position.distanceTo(puddle.mesh.position) < puddle.radius) {
-          z.hp -= puddle.damagePerSecond * dt;
-          if (z.hp <= 0) {
-            applyZombieDamage(zombies.indexOf(z), 0);
-          }
-        }
+      for (let zi = zombies.length - 1; zi >= 0; zi -= 1) {
+        const z = zombies[zi];
+        if (z.mesh.position.distanceTo(puddle.mesh.position) >= puddle.radius) continue;
+        z.hp -= puddle.damagePerSecond * dt;
+        if (z.hp <= 0) applyZombieDamage(zi, 0);
       }
     }
   }
@@ -4125,7 +4174,9 @@ function updateZombies(dt) {
         playSpatialSfx("zombie_growl", zombie.mesh.position, 1.2);
         // Spawn 3-5 extra zombies nearby
         const screamCount = 3 + Math.floor(Math.random() * 3);
-        for (let s = 0; s < screamCount; s++) {
+        const roomLeft = Math.max(0, settings.maxZombies - zombies.length);
+        const allowedSpawns = Math.min(screamCount, roomLeft);
+        for (let s = 0; s < allowedSpawns; s++) {
           const sAngle = Math.random() * Math.PI * 2;
           const sDist = 15 + Math.random() * 20;
           addZombie(zombie.mesh.position.x + Math.cos(sAngle) * sDist, zombie.mesh.position.z + Math.sin(sAngle) * sDist);
@@ -4501,7 +4552,7 @@ function openInventory() {
   paused = true;
   inventoryOpen = true;
   if (document.pointerLockElement === canvas) document.exitPointerLock();
-  showInventory(inventoryUI, materials, player, inventoryCraftHooks);
+  showInventory(inventoryUI, materials, player, skills, inventoryCraftHooks);
 }
 
 function closeInventory() {
@@ -4698,7 +4749,7 @@ function updateDayNight() {
     THREE.MathUtils.lerp(0.5, 0.72, daylight),
   );
   const sh = activeMapConfig.skyHueShift;
-  scene.background = new THREE.Color().setHSL(
+  scene.background.setHSL(
     THREE.MathUtils.lerp(0.62, 0.56, daylight) + sh,
     THREE.MathUtils.lerp(0.3, 0.42, daylight),
     THREE.MathUtils.lerp(0.1, 0.62, daylight),
@@ -4937,7 +4988,6 @@ function updateHud(dt) {
     const throwStr = `🔥${molotovCount} 💥${grenadeCount} ⛏${landMineCount} 🗡${spikeTrapCount}`;
     extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}`;
   }
-  updateHUDMaterials();
   if (skillMetaEl) {
     const activeSkills = Object.values(skills)
       .filter((s) => s.level > 0)
@@ -4950,7 +5000,11 @@ function updateHud(dt) {
   const mm = `${Math.floor(elapsed / 60)}`.padStart(2, "0");
   const ss = `${elapsed % 60}`.padStart(2, "0");
   worldStatsEl.textContent = `Wave ${wave} | ${mm}:${ss}`;
-  drawMinimap();
+  minimapRefreshTimer -= dt;
+  if (minimapRefreshTimer <= 0) {
+    drawMinimap();
+    minimapRefreshTimer = 0.1;
+  }
 
   player.damageFlash = Math.max(0, player.damageFlash - dt * 1.5);
   damageFlashEl.style.opacity = `${player.damageFlash * 0.35}`;
@@ -4998,8 +5052,16 @@ function updateHud(dt) {
     reloadBarEl.style.opacity = "0";
   }
   updateKillFeed(dt);
-  renderWeaponSlotsHUD();
-  renderMissionListHUD();
+  weaponHudRefreshTimer -= dt;
+  if (weaponHudRefreshTimer <= 0) {
+    renderWeaponSlotsHUD();
+    weaponHudRefreshTimer = 0.2;
+  }
+  missionHudRefreshTimer -= dt;
+  if (missionHudRefreshTimer <= 0) {
+    renderMissionListHUD();
+    missionHudRefreshTimer = 0.25;
+  }
 }
 
 // ─── Mission List HUD ───────────────────────────────────────────────────────
@@ -6022,6 +6084,7 @@ function throwNoiseMaker() {
     const floor = terrainHeight(noiseMesh.position.x, noiseMesh.position.z) + 0.11;
     if (noiseMesh.position.y <= floor || time >= maxTime) {
       clearInterval(interval);
+      pendingIntervals.delete(interval);
       noiseMesh.position.y = floor;
       distraction.active = true;
       distraction.position.copy(noiseMesh.position);
@@ -6029,6 +6092,7 @@ function throwNoiseMaker() {
       startDistractionBeep(distraction);
     }
   }, 20);
+  pendingIntervals.add(interval);
 }
 
 function startDistractionBeep(distraction) {
@@ -6037,6 +6101,7 @@ function startDistractionBeep(distraction) {
   const beepInterval = setInterval(() => {
     if (!distraction.active || gameOver || beeps >= maxBeeps) {
       clearInterval(beepInterval);
+      pendingIntervals.delete(beepInterval);
       if (distraction.active) deactivateDistraction(distraction);
       return;
     }
@@ -6045,6 +6110,7 @@ function startDistractionBeep(distraction) {
     setTimeout(() => distraction.mesh.scale.setScalar(1), 100);
     beeps++;
   }, 450);
+  pendingIntervals.add(beepInterval);
 }
 
 function deactivateDistraction(distraction) {
@@ -6436,7 +6502,13 @@ function animate(nowMs) {
       preventTreeCollision();
       resolvePlayerObstacles();
     }
-    ensureChunks();
+    const streamChunkX = Math.floor(player.position.x / chunkSize);
+    const streamChunkZ = Math.floor(player.position.z / chunkSize);
+    if (streamChunkX !== lastStreamChunkX || streamChunkZ !== lastStreamChunkZ) {
+      ensureChunks();
+      lastStreamChunkX = streamChunkX;
+      lastStreamChunkZ = streamChunkZ;
+    }
     updateZombies(dt);
     // If a zombie killed the player this frame, skip all further combat updates.
     if (!gameOver) {
@@ -6635,6 +6707,7 @@ window.addEventListener("keyup", (e) => {
     if (e.code === "KeyS") vehicleInput.backward = false;
     if (e.code === "KeyA") vehicleInput.left = false;
     if (e.code === "KeyD") vehicleInput.right = false;
+    if (e.code === "Space") vehicleInput.backward = false;
   }
 });
 window.addEventListener("blur", clearInputState);
@@ -6677,6 +6750,7 @@ window.addEventListener("resize", () => {
   applyActiveMapVisuals();
   ensureChunks();
   initWeather();
+  updateDayNight();
   for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
   for (let i = 0; i < 3; i += 1) {
     teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplate, remingtonTemplate, pistolTemplate));
@@ -6697,9 +6771,9 @@ startBtnEl.addEventListener("click", async () => {
   await ensureAudioUnlocked();
   if (mapDirty) {
     activeMapConfig = mapById(pendingMapId);
-    resetWorldForNewMap();
     mapDirty = false;
   }
+  resetWorldForNewMap();
   canvas.requestPointerLock();
 });
 
@@ -6718,11 +6792,26 @@ restartBtnEl.addEventListener("click", () => {
 continueBtnEl.addEventListener("click", async () => {
   playSfx("ui_click", 1);
   await ensureAudioUnlocked();
-  if (mapDirty) {
-    activeMapConfig = mapById(pendingMapId);
-    resetWorldForNewMap();
+
+  // Peek at the saved map so we reset the world for the correct one
+  const raw = localStorage.getItem("zowg_save");
+  let savedMapId = null;
+  if (raw) {
+    try {
+      const save = JSON.parse(raw);
+      savedMapId = save.activeMapId;
+    } catch {}
+  }
+
+  // Use saved map if available; otherwise fall back to the menu selection
+  const targetMapId = savedMapId || pendingMapId;
+  if (targetMapId && targetMapId !== activeMapConfig.id) {
+    activeMapConfig = mapById(targetMapId);
+    pendingMapId = activeMapConfig.id;
     mapDirty = false;
   }
+
+  resetWorldForNewMap();
   loadRun();
   canvas.requestPointerLock();
 });
