@@ -669,6 +669,20 @@ function updateAudioButtonLabel() {
   audioBtnEl.textContent = `Audio: ${audioSystem.muted ? "Off" : "On"}`;
 }
 
+function toggleAudioMuted() {
+  audioSystem.muted = !audioSystem.muted;
+  if (audioSystem.master) audioSystem.master.gain.value = audioSystem.muted ? 0 : 0.85;
+  localStorage.setItem("zowg_audio_muted", audioSystem.muted ? "1" : "0");
+  applyBgmVolume();
+  if (!audioSystem.muted) {
+    if (audioSystem.unlocked) setAudioScene(gameState === "PLAYING" ? "playing" : gameState === "MENU_PAUSE" ? "pause" : "title");
+    if (audioSystem.bgmEl?.src) audioSystem.bgmEl.play().catch(() => {});
+  } else {
+    audioSystem.bgmEl?.pause();
+  }
+  updateAudioButtonLabel();
+}
+
 function createAudioGraph() {
   if (audioSystem.ctx) return;
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -952,6 +966,11 @@ function ensureBgmElement() {
   const el = document.createElement("audio");
   el.setAttribute("playsinline", "true");
   el.preload = "auto";
+  el.addEventListener("error", () => {
+    // The project currently ships without music assets; fall back to procedural audio.
+    if (audioSystem.bgmCurrentFile === TITLE_BGM_FILE) startTitleMusicFallback();
+    else startAmbientLoop();
+  });
   document.body.appendChild(el);
   audioSystem.bgmEl = el;
   return el;
@@ -989,6 +1008,7 @@ async function playHtmlBgm(filename) {
       await el.play();
     } catch {
       if (filename === TITLE_BGM_FILE) startTitleMusicFallback();
+      else startAmbientLoop();
     }
     return;
   }
@@ -1001,6 +1021,7 @@ async function playHtmlBgm(filename) {
     await el.play();
   } catch {
     if (filename === TITLE_BGM_FILE) startTitleMusicFallback();
+    else startAmbientLoop();
   }
 }
 
@@ -2157,6 +2178,12 @@ function ensureChunks() {
     if (Math.abs(tcx - pcx) > chunkRadius + 1 || Math.abs(tcz - pcz) > chunkRadius + 1) {
       scene.remove(t.group);
       disposeTreeGroup(t.group);
+      // Clean visionBlockers
+      for (let j = visionBlockers.length - 1; j >= 0; j--) {
+        if (visionBlockers[j] === t.group || visionBlockers[j] === t.trunk) {
+          visionBlockers.splice(j, 1);
+        }
+      }
       trees.splice(i, 1);
     }
   }
@@ -2174,6 +2201,10 @@ function ensureChunks() {
           else o.material?.dispose();
         }
       });
+      // Clean visionBlockers
+      for (let j = visionBlockers.length - 1; j >= 0; j--) {
+        if (visionBlockers[j] === g) visionBlockers.splice(j, 1);
+      }
       structureGroups.splice(i, 1);
     }
   }
@@ -2185,6 +2216,10 @@ function ensureChunks() {
     if (Math.abs(cx - pcx) > chunkRadius + 1 || Math.abs(cz - pcz) > chunkRadius + 1) {
       scene.remove(g);
       disposeObject3D(g);
+      // Clean visionBlockers
+      for (let j = visionBlockers.length - 1; j >= 0; j--) {
+        if (visionBlockers[j] === g) visionBlockers.splice(j, 1);
+      }
       cityPropGroups.splice(i, 1);
     }
   }
@@ -2210,6 +2245,17 @@ function disposeObject3D(obj) {
           m.userData.disposed = true;
         }
       }
+    }
+  });
+}
+
+/** Dispose a one-off runtime object and all owned materials/geometries. */
+function disposeOwnedObject3D(obj) {
+  obj.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      o.geometry?.dispose();
+      const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+      for (const m of mats) m?.dispose?.();
     }
   });
 }
@@ -2642,7 +2688,7 @@ function exitVehicle() {
   v.occupied = false;
   v.driver = null;
   // Place player beside vehicle
-  const side = new THREE.Vector3(Math.cos(v.yaw + Math.PI / 2), 0, Math.sin(v.yaw + Math.PI / 2));
+  const side = _tempVec1.set(Math.cos(v.yaw + Math.PI / 2), 0, Math.sin(v.yaw + Math.PI / 2));
   player.position.copy(v.mesh.position).addScaledVector(side, 2.5);
   player.position.y = terrainHeight(player.position.x, player.position.z) + 1.8;
   activeVehicle = null;
@@ -2655,11 +2701,12 @@ function updateVehicles(dt) {
     if (vehicle.destroyed) continue;
     if (activeVehicle === vehicle) {
       updateVehicle(vehicle, dt, vehicleInput, terrainHeight);
-      // Camera follows vehicle
-      const camOffset = new THREE.Vector3(0, 3.5, 5.5);
+      // Camera follows vehicle (reused vectors)
+      const camOffset = _tempVec1.set(0, 3.5, 5.5);
       camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.yaw);
-      camera.position.lerp(vehicle.mesh.position.clone().add(camOffset), 0.15);
-      camera.lookAt(vehicle.mesh.position.clone().add(new THREE.Vector3(0, 1, 0)));
+      const targetPos = _tempVec2.copy(vehicle.mesh.position).add(_tempVec3.set(0, 1, 0));
+      camera.position.lerp(_tempVec4.copy(vehicle.mesh.position).add(camOffset), 0.15);
+      camera.lookAt(targetPos);
     }
     // Zombies damage vehicles
     for (const zombie of zombies) {
@@ -2719,20 +2766,29 @@ function spawnBullet(origin, direction, damage, options = {}) {
   });
 }
 
-function hasLineOfSight(origin, targetPosition) {
-  const direction = new THREE.Vector3().subVectors(targetPosition, origin);
-  const distance = direction.length();
-  if (distance <= 0.001) return true;
-  direction.normalize();
+const _losDirection = new THREE.Vector3();
+const _losRaycaster = new THREE.Raycaster();
+const _tempVec1 = new THREE.Vector3();
+const _tempVec2 = new THREE.Vector3();
+const _tempVec3 = new THREE.Vector3();
+const _tempVec4 = new THREE.Vector3();
 
-  const raycaster = new THREE.Raycaster(origin, direction, 0.05, Math.max(0.01, distance - 0.15));
-  return raycaster.intersectObjects(visionBlockers, true).length === 0;
+function hasLineOfSight(origin, targetPosition) {
+  _losDirection.subVectors(targetPosition, origin);
+  const distance = _losDirection.length();
+  if (distance <= 0.001) return true;
+  _losDirection.normalize();
+
+  _losRaycaster.set(origin, _losDirection);
+  _losRaycaster.far = Math.max(0.01, distance - 0.15);
+  return _losRaycaster.intersectObjects(visionBlockers, true).length === 0;
 }
 
 const _eyeVec = new THREE.Vector3();
 const _chestVec = new THREE.Vector3();
 const _toTargetVec = new THREE.Vector3();
 const _flatToTargetVec = new THREE.Vector3();
+const _facingVec = new THREE.Vector3();
 function canTeammateSeeZombie(mate, zombie) {
   _eyeVec.copy(mate.mesh.position).add(new THREE.Vector3(0, 1.58, 0));
   _chestVec.copy(zombie.mesh.position).add(new THREE.Vector3(0, 1.45, 0));
@@ -2745,8 +2801,8 @@ function canTeammateSeeZombie(mate, zombie) {
   if (_flatToTargetVec.lengthSq() < 0.0001) return true;
   _flatToTargetVec.normalize();
 
-  const facing = new THREE.Vector3(Math.sin(mate.mesh.rotation.y), 0, Math.cos(mate.mesh.rotation.y)).normalize();
-  if (facing.dot(_flatToTargetVec) < mate.visionFovCos) return false;
+  _facingVec.set(Math.sin(mate.mesh.rotation.y), 0, Math.cos(mate.mesh.rotation.y)).normalize();
+  if (_facingVec.dot(_flatToTargetVec) < mate.visionFovCos) return false;
 
   return hasLineOfSight(_eyeVec, _chestVec) || hasLineOfSight(_eyeVec, zombie.mesh.position.clone().add(new THREE.Vector3(0, 2.05, 0)));
 }
@@ -3137,8 +3193,11 @@ function updatePickups(dt) {
     p.mesh.position.y += Math.sin(gameTime * 4 + i) * 0.002;
     if (p.mesh.position.distanceTo(player.position) < 1.5) {
       if (p.isMaterial) {
-        materials[p.materialType] += 1 + Math.floor(Math.random() * 2);
+        const gain = 1 + Math.floor(Math.random() * 2);
+        materials[p.materialType] += gain;
+        onMaterialCollected(missionGenerator, p.materialType, gain);
         scene.remove(p.mesh);
+        disposeOwnedObject3D(p.mesh);
         pickups.splice(i, 1);
         messageEl.textContent = `Picked up ${p.materialType}! (${materials[p.materialType]} total)`;
         playSfx("ui_click", 0.8);
@@ -3152,6 +3211,7 @@ function updatePickups(dt) {
       syncPlayerAmmoFields(player);
       player.hp = Math.min(getPlayerMaxHealth(), player.hp + 8);
       scene.remove(p.mesh);
+      disposeOwnedObject3D(p.mesh);
       pickups.splice(i, 1);
       messageEl.textContent = "Picked up supplies (+all ammo reserves, +hp).";
     }
@@ -3341,6 +3401,7 @@ function updateZombies(dt) {
     puddle.mesh.material.opacity = Math.max(0, puddle.life / puddle.maxLife * 0.7);
     if (puddle.life <= 0) {
       scene.remove(puddle.mesh);
+      disposeOwnedObject3D(puddle.mesh);
       acidPuddles.splice(ai, 1);
       continue;
     }
@@ -3647,6 +3708,8 @@ function spawnAcidSpit(from, to) {
     if (time >= duration || acid.position.y < terrainHeight(acid.position.x, acid.position.z)) {
       clearInterval(interval);
       scene.remove(acid);
+      acid.geometry.dispose();
+      acid.material.dispose();
       // Create acid puddle
       createAcidPuddle(acid.position);
     }
@@ -4193,6 +4256,7 @@ function updateParticles(dt) {
     p.life -= dt;
     if (p.life <= 0) {
       scene.remove(p.mesh);
+      disposeOwnedObject3D(p.mesh);
       particles.splice(i, 1);
       continue;
     }
@@ -4352,6 +4416,7 @@ function updateGrenades(dt) {
     if (g.fuse <= 0) {
       const pos = g.mesh.position.clone();
       scene.remove(g.mesh);
+      disposeOwnedObject3D(g.mesh);
       grenades.splice(i, 1);
       createExplosion(pos, 8.5, 95);
     }
@@ -4449,6 +4514,7 @@ function checkBarrelHits(bulletFrom, bulletTo) {
     if (segmentSphereHit(bulletFrom, bulletTo, b.center, 0.44)) {
       const pos = b.center.clone();
       scene.remove(b.mesh);
+      disposeOwnedObject3D(b.mesh);
       barrels.splice(i, 1);
       createExplosion(pos, 7.5, 85);
       return true;
@@ -4460,9 +4526,11 @@ function checkBarrelHits(bulletFrom, bulletTo) {
 // ─── Zombie Corpse Revival System ────────────────────────────────────────────
 function createZombieCorpse(position, type, rotationY) {
   const corpse = new THREE.Group();
+  const corpseBodyMat = new THREE.MeshStandardMaterial({ color: 0x5a6b4a, roughness: 0.9 });
+  corpseBodyMat.userData.disposeWithMesh = true;
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(0.9, 0.25, 0.55),
-    new THREE.MeshStandardMaterial({ color: 0x5a6b4a, roughness: 0.9 }),
+    corpseBodyMat,
   );
   body.position.y = 0.12;
   const head = new THREE.Mesh(
@@ -4495,6 +4563,7 @@ function updateCorpses(dt) {
     if (corpse.reviveTimer <= 0) {
       playSfx("zombie_revive", 0.8);
       scene.remove(corpse.mesh);
+      disposeObject3D(corpse.mesh);
       zombieCorpses.splice(i, 1);
       // Revive as same type
       addZombie(corpse.position.x, corpse.position.z, corpse.type);
@@ -4572,6 +4641,7 @@ function startDistractionBeep(distraction) {
 function deactivateDistraction(distraction) {
   distraction.active = false;
   scene.remove(distraction.mesh);
+  disposeOwnedObject3D(distraction.mesh);
   const idx = distractions.indexOf(distraction);
   if (idx >= 0) distractions.splice(idx, 1);
 }
@@ -4682,8 +4752,12 @@ function updateSupplyDrops(dt) {
       if (drop.mesh.position.y <= groundY) {
         drop.mesh.position.y = groundY;
         drop.landed = true;
-        drop.mesh.remove(drop.mesh.children[4]); // Remove chute
-        drop.mesh.remove(drop.mesh.children[3]);
+        const lines = drop.mesh.children[4];
+        const chute = drop.mesh.children[3];
+        drop.mesh.remove(lines); // Remove chute
+        drop.mesh.remove(chute);
+        disposeOwnedObject3D(lines);
+        disposeOwnedObject3D(chute);
         // Add smoke effect
         spawnSmoke(drop.mesh.position);
       }
@@ -4723,6 +4797,7 @@ function openSupplyDrop(drop) {
   playSfx("ui_click", 1.2);
   drop.opened = true;
   scene.remove(drop.mesh);
+  disposeOwnedObject3D(drop.mesh);
 
   if (drop.dropType === "weapon_crate") {
     // Weapon crate: random weapon ammo + upgrade materials
@@ -4831,7 +4906,10 @@ function performMelee() {
   slash.position.y += 1.5;
   slash.lookAt(player.position);
   scene.add(slash);
-  setTimeout(() => scene.remove(slash), 100);
+  setTimeout(() => {
+    scene.remove(slash);
+    disposeOwnedObject3D(slash);
+  }, 100);
 
   // Check zombie hits
   let hitCount = 0;
@@ -5016,6 +5094,10 @@ window.addEventListener("mousemove", (e) => {
 });
 
 window.addEventListener("keydown", (e) => {
+  if (!audioSystem.unlocked) {
+    // First keyboard input should unlock audio context on browsers that gate autoplay.
+    void ensureAudioUnlocked();
+  }
   keys.add(e.code);
   if (activeVehicle) {
     if (e.code === "KeyW") vehicleInput.forward = true;
@@ -5050,12 +5132,7 @@ window.addEventListener("keydown", (e) => {
     }
   }
   if (e.code === "KeyM") {
-    audioSystem.muted = !audioSystem.muted;
-    if (audioSystem.master) audioSystem.master.gain.value = audioSystem.muted ? 0 : 0.85;
-    localStorage.setItem("zowg_audio_muted", audioSystem.muted ? "1" : "0");
-    applyBgmVolume();
-    if (!audioSystem.muted && audioSystem.bgmEl?.src) audioSystem.bgmEl.play().catch(() => {});
-    updateAudioButtonLabel();
+    toggleAudioMuted();
   }
   if (e.code === "KeyF" && gameOver) window.location.reload();
   if (e.code === "KeyG" && gameState === "PLAYING" && !gameOver) throwGrenade();
@@ -5208,12 +5285,7 @@ continueBtnEl.addEventListener("click", async () => {
 
 audioBtnEl.addEventListener("click", async () => {
   await ensureAudioUnlocked();
-  audioSystem.muted = !audioSystem.muted;
-  if (audioSystem.master) audioSystem.master.gain.value = audioSystem.muted ? 0 : 0.85;
-  localStorage.setItem("zowg_audio_muted", audioSystem.muted ? "1" : "0");
-  applyBgmVolume();
-  if (!audioSystem.muted && audioSystem.bgmEl?.src) audioSystem.bgmEl.play().catch(() => {});
-  updateAudioButtonLabel();
+  toggleAudioMuted();
 });
 
 document.addEventListener("visibilitychange", () => {

@@ -1,3 +1,5 @@
+import * as THREE from "three";
+
 /** Mission system for DeadTakeover.
  *  Generates and tracks active missions with objectives and rewards.
  */
@@ -126,6 +128,8 @@ export function generateMission(id, playerPosition, terrainHeight, worldSize = 2
 }
 
 export function updateMissions(generator, dt, player, materials, zombies, terrainHeight) {
+  const missionPos = new THREE.Vector3();
+  const returnPos = new THREE.Vector3();
   generator.timer += dt;
 
   // Generate new mission if slot available (max 3 active)
@@ -160,7 +164,8 @@ export function updateMissions(generator, dt, player, materials, zombies, terrai
         generator.activeMissions.splice(i, 1);
       }
     } else if (m.type === MISSION_TYPES.DEFEND) {
-      const d = player.position.distanceTo(new THREE.Vector3(m.position.x, m.position.y, m.position.z));
+      missionPos.set(m.position.x, m.position.y, m.position.z);
+      const d = player.position.distanceTo(missionPos);
       if (d < m.radius) {
         m.defendTimer -= dt;
         if (m.defendTimer <= 0) {
@@ -170,7 +175,8 @@ export function updateMissions(generator, dt, player, materials, zombies, terrai
         }
       }
     } else if (m.type === MISSION_TYPES.RESCUE) {
-      const d = player.position.distanceTo(new THREE.Vector3(m.position.x, m.position.y, m.position.z));
+      missionPos.set(m.position.x, m.position.y, m.position.z);
+      const d = player.position.distanceTo(missionPos);
       if (d < m.radius && !m.survivorFound) {
         m.survivorFound = true;
       }
@@ -190,12 +196,14 @@ export function updateMissions(generator, dt, player, materials, zombies, terrai
         generator.activeMissions.splice(i, 1);
       }
     } else if (m.type === MISSION_TYPES.SUPPLY_RUN) {
-      const d = player.position.distanceTo(new THREE.Vector3(m.position.x, m.position.y, m.position.z));
+      missionPos.set(m.position.x, m.position.y, m.position.z);
+      const d = player.position.distanceTo(missionPos);
       if (d < 8 && !m.reached) {
         m.reached = true;
       }
       if (m.reached) {
-        const rd = player.position.distanceTo(new THREE.Vector3(m.returnPosition.x, m.returnPosition.y, m.returnPosition.z));
+        returnPos.set(m.returnPosition.x, m.returnPosition.y, m.returnPosition.z);
+        const rd = player.position.distanceTo(returnPos);
         if (rd < 8) {
           m.returned = true;
           m.completed = true;

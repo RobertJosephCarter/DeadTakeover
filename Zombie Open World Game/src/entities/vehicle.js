@@ -195,6 +195,7 @@ export function createVehicle(type, x, z, terrainHeightFn) {
     driver: null,
     passengers: [],
     yaw: 0,
+    modelYawOffset: Math.PI,
     armorLevel: 0,
     engineLevel: 0,
     destroyed: false,
@@ -209,7 +210,6 @@ export function updateVehicle(vehicle, dt, input, terrainHeightFn) {
   }
 
   const forward = new THREE.Vector3(-Math.sin(vehicle.yaw), 0, -Math.cos(vehicle.yaw));
-  const right = new THREE.Vector3(Math.cos(vehicle.yaw), 0, -Math.sin(vehicle.yaw));
 
   // Acceleration / braking
   if (input.forward) {
@@ -231,7 +231,7 @@ export function updateVehicle(vehicle, dt, input, terrainHeightFn) {
 
   // Move
   vehicle.mesh.position.addScaledVector(forward, vehicle.speed * dt);
-  vehicle.mesh.rotation.y = vehicle.yaw;
+  vehicle.mesh.rotation.y = vehicle.yaw + (vehicle.modelYawOffset || 0);
 
   // Terrain following
   const groundY = terrainHeightFn(vehicle.mesh.position.x, vehicle.mesh.position.z);
