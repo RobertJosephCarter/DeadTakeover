@@ -72,6 +72,11 @@ const killStreakEl = document.querySelector("#kill-streak-display");
 const nightIndicatorEl = document.querySelector("#night-indicator");
 const buildHintEl = document.querySelector("#build-hint");
 
+/** Mission list HUD element — created dynamically. */
+const missionListEl = document.createElement("div");
+missionListEl.id = "mission-list";
+document.body.appendChild(missionListEl);
+
 /** Weapon slots HUD element — created dynamically since markup is missing. */
 const weaponSlotsEl = document.createElement("div");
 weaponSlotsEl.id = "weapon-slots";
@@ -4247,6 +4252,26 @@ function updateHud(dt) {
     killStreakEl.style.opacity = killStreak >= 3 ? "1" : "0";
   }
   renderWeaponSlotsHUD();
+  renderMissionListHUD();
+}
+
+// ─── Mission List HUD ───────────────────────────────────────────────────────
+function renderMissionListHUD() {
+  if (!missionListEl || !missionGenerator || !missionGenerator.activeMissions) return;
+  missionListEl.innerHTML = "";
+  if (missionGenerator.activeMissions.length === 0) return;
+  const title = document.createElement("div");
+  title.className = "mission-list-title";
+  title.textContent = `★ Missions (${missionGenerator.activeMissions.length})`;
+  missionListEl.appendChild(title);
+  for (const m of missionGenerator.activeMissions) {
+    const div = document.createElement("div");
+    div.className = "mission-item";
+    const status = formatMissionStatus(m);
+    const timerStr = m.timer && m.timeLimit ? ` | ${Math.max(0, Math.ceil(m.timer))}s` : "";
+    div.textContent = `${m.title}${status ? ` — ${status}` : ""}${timerStr}`;
+    missionListEl.appendChild(div);
+  }
 }
 
 // ─── Weapon Slots HUD ─────────────────────────────────────────────────────
