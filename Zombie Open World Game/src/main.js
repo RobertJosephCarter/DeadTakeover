@@ -425,6 +425,16 @@ let akTemplateRef = null;
 let pistolTemplateRef = null;
 let remingtonTemplateRef = null;
 
+/** Hard cap on active particles to prevent GC spikes. */
+const MAX_PARTICLES = 600;
+
+// Shared particle geometries — created once and NEVER disposed during gameplay.
+const _pGeoBlood  = new THREE.SphereGeometry(0.032, 4, 4);
+const _pGeoFire   = new THREE.SphereGeometry(0.08, 4, 4);
+const _pGeoSpark  = new THREE.SphereGeometry(0.025, 3, 3);
+const _pGeoDebris = new THREE.SphereGeometry(0.07, 4, 4);
+[_pGeoBlood, _pGeoFire, _pGeoSpark, _pGeoDebris].forEach(g => { g.userData.preventDispose = true; });
+
 /** Reusable Vector3 pool to reduce per-frame GC pressure. */
 const _v3Pool = Array.from({ length: 8 }, () => new THREE.Vector3());
 let _v3Index = 0;
@@ -2467,11 +2477,12 @@ function disposeObject3D(obj) {
   });
 }
 
-/** Dispose a one-off runtime object and all owned materials/geometries. */
+/** Dispose a one-off runtime object and all owned materials/geometries.
+ *  Skips geometries marked preventDispose (shared pool assets). */
 function disposeOwnedObject3D(obj) {
   obj.traverse((o) => {
     if (o instanceof THREE.Mesh) {
-      o.geometry?.dispose();
+      if (!o.geometry?.userData?.preventDispose) o.geometry?.dispose();
       const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
       for (const m of mats) m?.dispose?.();
     }
@@ -3836,6 +3847,14 @@ function updateTeammates(dt) {
   }
 }
 
+// Pre-allocated vectors for the zombie update loop — avoids per-frame heap allocs.
+const _zombieTargetPos    = new THREE.Vector3();
+const _zombieSurvivorPos  = new THREE.Vector3();
+const _zombieSpitterOff1  = new THREE.Vector3(0, 2, 0);
+const _zombieSpitterOff2  = new THREE.Vector3(0, 1.5, 0);
+const _zombieAcidOrigin   = new THREE.Vector3();
+const _zombieAcidTarget   = new THREE.Vector3();
+
 function updateZombies(dt) {
   // Update acid / fire puddles
   for (let ai = acidPuddles.length - 1; ai >= 0; ai--) {
@@ -3881,7 +3900,7 @@ function updateZombies(dt) {
     zombie.attackTimer -= dt;
 
     // Check distractions first (noise makers attract zombies)
-    let targetPosition = player.position.clone();
+    _zombieTargetPos.copy(player.position);
     let targetIsPlayer = true;
     let nearestDistanceSq = zombie.mesh.position.distanceToSquared(player.position);
 
@@ -3891,7 +3910,7 @@ function updateZombies(dt) {
         const d2 = zombie.mesh.position.distanceToSquared(dist.position);
         if (d2 < nearestDistanceSq && d2 < 60 * 60) {
           nearestDistanceSq = d2;
-          targetPosition.copy(dist.position);
+          _zombieTargetPos.copy(dist.position);
           targetIsPlayer = false;
         }
       }
@@ -3902,23 +3921,23 @@ function updateZombies(dt) {
       const d2 = zombie.mesh.position.distanceToSquared(mate.mesh.position);
       if (d2 < nearestDistanceSq) {
         nearestDistanceSq = d2;
-        targetPosition.copy(mate.mesh.position);
+        _zombieTargetPos.copy(mate.mesh.position);
         targetIsPlayer = false;
       }
     }
 
     // Target stranded survivor if active
     if (isSurvivorAlive(eventDirector) && eventDirector.survivorPosition) {
-      const sPos = new THREE.Vector3(eventDirector.survivorPosition.x, eventDirector.survivorPosition.y, eventDirector.survivorPosition.z);
-      const d2 = zombie.mesh.position.distanceToSquared(sPos);
+      _zombieSurvivorPos.set(eventDirector.survivorPosition.x, eventDirector.survivorPosition.y, eventDirector.survivorPosition.z);
+      const d2 = zombie.mesh.position.distanceToSquared(_zombieSurvivorPos);
       if (d2 < nearestDistanceSq) {
         nearestDistanceSq = d2;
-        targetPosition.copy(sPos);
+        _zombieTargetPos.copy(_zombieSurvivorPos);
         targetIsPlayer = false;
       }
     }
 
-    const toTarget = getV3().subVectors(targetPosition, zombie.mesh.position);
+    const toTarget = getV3().subVectors(_zombieTargetPos, zombie.mesh.position);
     toTarget.y = 0;
     const distance = toTarget.length();
 
@@ -3928,11 +3947,13 @@ function updateZombies(dt) {
     if (zombie.type === "spitter") {
       zombie.spitterCooldown -= dt;
       // Spitter tries to maintain distance and spits acid
-      if (distance < 35 && distance > 12 && zombie.spitterCooldown <= 0 && hasLineOfSight(zombie.mesh.position, targetPosition)) {
+      if (distance < 35 && distance > 12 && zombie.spitterCooldown <= 0 && hasLineOfSight(zombie.mesh.position, _zombieTargetPos)) {
         zombie.spitterCooldown = 4 + Math.random() * 2;
         playSpatialSfx("acid_spit", zombie.mesh.position, 0.7);
         // Create acid projectile
-        spawnAcidSpit(zombie.mesh.position.clone().add(new THREE.Vector3(0, 2, 0)), targetPosition.clone().add(new THREE.Vector3(0, 1.5, 0)));
+        _zombieAcidOrigin.copy(zombie.mesh.position).add(_zombieSpitterOff1);
+        _zombieAcidTarget.copy(_zombieTargetPos).add(_zombieSpitterOff2);
+        spawnAcidSpit(_zombieAcidOrigin, _zombieAcidTarget);
         topCenterAlertEl.textContent = "⚠ SPITTER ACID!";
         alertTimer = 1.5;
       }
@@ -4527,12 +4548,12 @@ function ejectShell(weaponName) {
 
 // ─── Fire particles for explosions ───────────────────────────────────────────
 function spawnFireParticles(position, count = 12) {
-  for (let i = 0; i < count; i++) {
+  const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
+  for (let i = 0; i < toSpawn; i++) {
     const dir = new THREE.Vector3((Math.random() - 0.5) * 2, 0.5 + Math.random() * 2, (Math.random() - 0.5) * 2).normalize();
-    const size = 0.04 + Math.random() * 0.12;
     const p = new THREE.Mesh(
-      new THREE.SphereGeometry(size, 4, 4),
-      new THREE.MeshBasicMaterial({ color: Math.random() < 0.6 ? 0xff4400 : 0xffaa00, transparent: true, opacity: 0.9 }),
+      _pGeoFire,
+      new THREE.MeshBasicMaterial({ color: Math.random() < 0.6 ? 0xff4400 : 0xffaa00, transparent: true, opacity: 0.9, depthWrite: false }),
     );
     p.position.copy(position);
     p.position.y += 0.5 + Math.random() * 1.0;
@@ -4547,11 +4568,12 @@ function spawnFireParticles(position, count = 12) {
 
 // ─── Electric spark effect ───────────────────────────────────────────────────
 function spawnSparks(position, count = 8) {
-  for (let i = 0; i < count; i++) {
+  const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
+  for (let i = 0; i < toSpawn; i++) {
     const dir = new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * 2, (Math.random() - 0.5) * 2).normalize();
     const p = new THREE.Mesh(
-      new THREE.SphereGeometry(0.02 + Math.random() * 0.03, 3, 3),
-      new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 1 }),
+      _pGeoSpark,
+      new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 1, depthWrite: false }),
     );
     p.position.copy(position);
     scene.add(p);
@@ -5004,16 +5026,16 @@ function updateFloatingDamageNums(dt) {
 
 // ─── Blood Particles ─────────────────────────────────────────────────────────
 function spawnBloodParticles(position, count = 6) {
-  for (let i = 0; i < count; i++) {
+  const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
+  for (let i = 0; i < toSpawn; i++) {
     const dir = new THREE.Vector3(
       (Math.random() - 0.5) * 2,
       0.2 + Math.random() * 1.8,
       (Math.random() - 0.5) * 2,
     ).normalize();
-    const size = 0.022 + Math.random() * 0.038;
     const p = new THREE.Mesh(
-      new THREE.SphereGeometry(size, 4, 4),
-      new THREE.MeshBasicMaterial({ color: 0x8b0000, transparent: true, opacity: 1 }),
+      _pGeoBlood,
+      new THREE.MeshBasicMaterial({ color: 0x8b0000, transparent: true, opacity: 1, depthWrite: false }),
     );
     p.position.copy(position);
     p.position.y += 1.3 + Math.random() * 0.5;
@@ -5029,13 +5051,20 @@ function spawnBloodParticles(position, count = 6) {
   }
 }
 
+// Max WebGL resource frees per frame to prevent dispose-stutter.
+const MAX_DISPOSES_PER_FRAME = 12;
+
 function updateParticles(dt) {
+  let disposedThisFrame = 0;
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
     p.life -= dt;
     if (p.life <= 0) {
       scene.remove(p.mesh);
-      disposeOwnedObject3D(p.mesh);
+      if (disposedThisFrame < MAX_DISPOSES_PER_FRAME) {
+        disposeOwnedObject3D(p.mesh);
+        disposedThisFrame++;
+      }
       particles.splice(i, 1);
       continue;
     }
@@ -5085,17 +5114,19 @@ function updateParticles(dt) {
 function createExplosion(position, radius, damage) {
   addScreenShake(Math.min(0.75, 0.24 + radius * 0.06));
   playSfx("explosion", 1);
-  spawnFireParticles(position, 18);
-  spawnSparks(position, 12);
-  for (let i = 0; i < 30; i++) {
+  spawnFireParticles(position, 14);
+  spawnSparks(position, 8);
+  // Debris particles — use shared geometry to avoid geometry allocation per particle
+  const debrisCount = Math.min(18, MAX_PARTICLES - particles.length);
+  for (let i = 0; i < debrisCount; i++) {
     const dir = new THREE.Vector3(
       (Math.random() - 0.5) * 2,
       Math.random() * 2.8,
       (Math.random() - 0.5) * 2,
     ).normalize();
     const p = new THREE.Mesh(
-      new THREE.SphereGeometry(0.05 + Math.random() * 0.1, 4, 4),
-      new THREE.MeshBasicMaterial({ color: Math.random() < 0.5 ? 0xff8800 : 0xff3300, transparent: true, opacity: 1 }),
+      _pGeoDebris,
+      new THREE.MeshBasicMaterial({ color: Math.random() < 0.5 ? 0xff8800 : 0xff3300, transparent: true, opacity: 1, depthWrite: false }),
     );
     p.position.copy(position);
     scene.add(p);
@@ -5108,9 +5139,10 @@ function createExplosion(position, radius, damage) {
       isExplosion: false,
     });
   }
+  // Flash sphere — this one stays large, give it its own geometry
   const flash = new THREE.Mesh(
-    new THREE.SphereGeometry(0.4, 10, 10),
-    new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0.92 }),
+    new THREE.SphereGeometry(0.4, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0.92, depthWrite: false }),
   );
   flash.position.copy(position);
   scene.add(flash);
@@ -5452,6 +5484,9 @@ function spawnArrow(origin, direction, damage) {
   });
 }
 
+const _arrowDir     = new THREE.Vector3();
+const _arrowForward = new THREE.Vector3(0, 0, 1);
+const _arrowStickOff = new THREE.Vector3(0, 1.2, 0);
 function updateArrows(dt) {
   for (let i = arrows.length - 1; i >= 0; i--) {
     const a = arrows[i];
@@ -5467,8 +5502,8 @@ function updateArrows(dt) {
     a.life -= dt;
     a.velocity.y += settings.gravity * 0.18 * dt;
     a.mesh.position.addScaledVector(a.velocity, dt);
-    const dir = a.velocity.clone().normalize();
-    a.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+    _arrowDir.copy(a.velocity).normalize();
+    a.mesh.quaternion.setFromUnitVectors(_arrowForward, _arrowDir);
     if (a.life <= 0) {
       scene.remove(a.mesh);
       a.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
@@ -5482,7 +5517,7 @@ function updateArrows(dt) {
         applyZombieDamage(zi, a.damage, false);
         triggerHitMarker(false);
         messageEl.textContent = `Arrow hit! ${a.damage.toFixed(0)} dmg`;
-        a.mesh.position.copy(z.mesh.position).add(new THREE.Vector3(0, 1.2, 0));
+        a.mesh.position.copy(z.mesh.position).add(_arrowStickOff);
         a.stuck = true;
         a.stuckTimer = 4;
         hit = true;
@@ -5537,24 +5572,30 @@ function spawnRocket(origin, direction, damage) {
   });
 }
 
-const _rocketPos = new THREE.Vector3();
+// Shared resources for rocket trail — allocated once, never disposed during gameplay.
+const _rocketTrailGeo = new THREE.SphereGeometry(0.06, 4, 4);
+_rocketTrailGeo.userData.preventDispose = true;
+const _rocketDir     = new THREE.Vector3();
+const _rocketForward = new THREE.Vector3(0, 0, 1);
+const _rocketPos     = new THREE.Vector3();
+const _trailVel      = new THREE.Vector3();
+
 function updateRockets(dt) {
   for (let i = rockets.length - 1; i >= 0; i--) {
     const r = rockets[i];
     r.life -= dt;
     r.mesh.position.addScaledVector(r.velocity, dt);
-    const dir = r.velocity.clone().normalize();
-    r.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+    _rocketDir.copy(r.velocity).normalize();
+    r.mesh.quaternion.setFromUnitVectors(_rocketForward, _rocketDir);
 
-    // Exhaust trail particle
-    if (Math.random() < 0.6) {
-      const trailP = new THREE.Mesh(
-        new THREE.SphereGeometry(0.06, 4, 4),
-        new THREE.MeshBasicMaterial({ color: 0xff8800, transparent: true, opacity: 0.7 }),
-      );
-      trailP.position.copy(r.mesh.position).addScaledVector(dir, -0.3);
+    // Exhaust trail — use shared geometry, allocate only the material (small, fast)
+    if (particles.length < MAX_PARTICLES && Math.random() < 0.55) {
+      const trailMat = new THREE.MeshBasicMaterial({ color: 0xff8800, transparent: true, opacity: 0.7, depthWrite: false });
+      const trailP = new THREE.Mesh(_rocketTrailGeo, trailMat);
+      trailP.position.copy(r.mesh.position).addScaledVector(_rocketDir, -0.3);
       scene.add(trailP);
-      particles.push({ mesh: trailP, velocity: new THREE.Vector3((Math.random()-0.5)*1.5, Math.random()*0.8, (Math.random()-0.5)*1.5), life: 0.25, maxLife: 0.25, gravity: false, isExplosion: false });
+      _trailVel.set((Math.random()-0.5)*1.5, Math.random()*0.8, (Math.random()-0.5)*1.5);
+      particles.push({ mesh: trailP, velocity: _trailVel.clone(), life: 0.22, maxLife: 0.22, gravity: false, isExplosion: false });
     }
 
     _rocketPos.copy(r.mesh.position);
