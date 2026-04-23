@@ -1,6 +1,7 @@
 {
-  "name": "zombie-open-world-game",
-  "version": "0.0.0",
+  "name": "deadtakeover",
+  "version": "1.0.0",
+  "description": "Browser-based zombie open-world survival FPS built with Three.js.",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,5 +14,18 @@
   },
   "dependencies": {
     "three": "^0.184.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RobertJosephCarter/DeadTakeover.git"
+  },
+  "keywords": [
+    "threejs",
+    "webgl",
+    "fps",
+    "zombie",
+    "survival",
+    "game",
+    "open-world"
+  ]
 }

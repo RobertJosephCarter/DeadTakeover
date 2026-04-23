@@ -4,10 +4,55 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>zombie-open-world-game</title>
+    <title>DeadTakeover — Zombie Open World Game</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <canvas id="game"></canvas>
+      <div id="sky-vignette"></div>
+      <div id="menu-overlay">
+        <div class="menu-card">
+          <h1 id="menu-title">Zombie Squad</h1>
+          <p id="menu-subtitle">Survive the open world with your team.</p>
+          <div id="map-select" class="map-select">
+            <div class="map-select-label">Choose map</div>
+            <div id="map-grid" class="map-grid"></div>
+          </div>
+          <div class="menu-actions">
+            <button id="btn-start">Start Game</button>
+            <button id="btn-continue" class="is-hidden">Continue Run</button>
+            <button id="btn-resume" class="is-hidden">Resume</button>
+            <button id="btn-restart" class="is-hidden">Restart Run</button>
+            <button id="btn-audio">Audio: On</button>
+          </div>
+          <p class="menu-help">WASD Move · Shift Sprint · C Crouch · Space Jump · Click/LMB Shoot · RMB Aim Down Sights · R Reload · 1/2/3 Weapon Slots (Rifle/Shotgun/Pistol) · Q/E Swap Weapon · G Grenade · V Noise Maker · F Melee Knife · B Build Barricade · N Switch Build Type · T Team Swap · P Pause · M Audio. Scavenge materials from zombies! Build wood/metal barricades! Watch for ★ Supply Drops! Special Zombies: Spitter (acid), Hunter (pounces), Charger (charges), Crawler (low)! Corpses revive if not headshot!</p>
+          <p class="menu-credits">Buildings &amp; street atlas: Kenney.nl (CC0). Pistol GLB: Webaverse (github.com/webaverse/pistol). Music: Kevin MacLeod (incompetech.com) — Title: Floating Cities; maps + Outbreak City: Movement Proposition, Darkest Child, Frost Waltz, Crossing the Chasm, Volatile Reaction, District Four. CC BY — see incompetech.com.</p>
+        </div>
+      </div>
+      <div id="hud">
+        <div id="hud-left">
+          <div class="panel-title">Survivor Status</div>
+          <div class="bar-wrap"><span>Health</span><div class="bar"><div id="health-fill" class="bar-fill health"></div></div></div>
+          <div class="bar-wrap"><span>Stamina</span><div class="bar"><div id="stamina-fill" class="bar-fill stamina"></div></div></div>
+          <div class="meta" id="stats-meta">Ammo: 20/100 | Kills: 0 | Zombies: 0</div>
+          <div class="meta" id="extra-meta">Grenades: 3 | NoiseMakers: 2 | Score: 0</div>
+          <div class="meta" id="skill-meta">Skills: None</div>
+        </div>
+        <div id="hud-right">
+          <div class="panel-title">Minimap</div>
+          <canvas id="minimap" width="180" height="180"></canvas>
+          <div id="world-stats">Wave 1 | 00:00</div>
+        </div>
+        <div id="top-center-alert"></div>
+        <div id="message">WASD move, Shift sprint, mouse look, click shoot, R reload.</div>
+      </div>
+      <div id="crosshair"></div>
+      <div id="hit-marker"></div>
+      <div id="damage-flash"></div>
+      <div id="kill-streak-display"></div>
+      <div id="night-indicator"></div>
+      <div id="build-hint"></div>
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
