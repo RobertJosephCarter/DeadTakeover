@@ -14,13 +14,13 @@ export const SETTINGS = {
 };
 
 export const WEAPON_DEFINITIONS = [
-  { name: "Rifle", ammo: 20, reserve: 120, magSize: 20, damage: 26, fireDelay: 0.12, recoil: 1.0, range: 120, reloadTime: 1.25, unlocked: true },
-  { name: "Pistol", ammo: 12, reserve: 84, magSize: 12, damage: 18, fireDelay: 0.2, recoil: 0.65, range: 95, reloadTime: 1.1, unlocked: true },
-  { name: "Shotgun", ammo: 6, reserve: 30, magSize: 6, damage: 20, fireDelay: 0.85, recoil: 2.5, range: 25, reloadTime: 2.1, pellets: 8, unlocked: true },
-  { name: "Crossbow", ammo: 1, reserve: 20, magSize: 1, damage: 85, fireDelay: 1.1, recoil: 0.8, range: 180, reloadTime: 1.6, silent: true, bolt: true, unlocked: true },
-  { name: "Flamethrower", ammo: 100, reserve: 300, magSize: 100, damage: 4, fireDelay: 0.04, recoil: 0.2, range: 18, reloadTime: 2.5, continuous: true, unlocked: true },
-  { name: "Sniper", ammo: 5, reserve: 25, magSize: 5, damage: 110, fireDelay: 1.4, recoil: 3.2, range: 250, reloadTime: 2.8, scope: true, adsRequired: true, unlocked: true },
-  { name: "Rocket", ammo: 1, reserve: 5, magSize: 1, damage: 150, fireDelay: 1.6, recoil: 4.0, range: 120, reloadTime: 3.0, explosive: true, selfDamage: true, unlocked: true },
+  { name: "Rifle", ammoType: "5.56 AP", ammo: 30, reserve: 180, magSize: 30, damage: 24, fireDelay: 0.105, recoil: 0.9, range: 135, reloadTime: 1.45, bulletSpeed: 96, pierce: 1, unlocked: true },
+  { name: "Pistol", ammoType: "9mm HP", ammo: 15, reserve: 105, magSize: 15, damage: 20, fireDelay: 0.18, recoil: 0.55, range: 100, reloadTime: 1.0, bulletSpeed: 88, critChance: 0.18, critMultiplier: 1.75, unlocked: true },
+  { name: "Shotgun", ammoType: "12g Buck", ammo: 8, reserve: 40, magSize: 8, damage: 18, fireDelay: 0.78, recoil: 2.35, range: 34, reloadTime: 2.15, pellets: 10, pelletSpeed: 68, stagger: 0.26, unlocked: true },
+  { name: "Crossbow", ammoType: "Bolts", ammo: 1, reserve: 28, magSize: 1, damage: 92, fireDelay: 0.95, recoil: 0.45, range: 190, reloadTime: 1.35, silent: true, bolt: true, bleedDamage: 26, retrieveChance: 0.35, unlocked: true },
+  { name: "Flamethrower", ammoType: "Fuel", ammo: 120, reserve: 480, magSize: 120, damage: 5, fireDelay: 0.038, recoil: 0.15, range: 22, reloadTime: 2.6, continuous: true, burnDamage: 12, unlocked: true },
+  { name: "Sniper", ammoType: ".308 Match", ammo: 5, reserve: 35, magSize: 5, damage: 125, fireDelay: 1.25, recoil: 2.9, range: 280, reloadTime: 2.45, bulletSpeed: 150, scope: true, adsRequired: true, pierce: 2, armorBreak: true, unlocked: true },
+  { name: "Rocket", ammoType: "Rockets", ammo: 1, reserve: 7, magSize: 1, damage: 185, fireDelay: 1.7, recoil: 4.2, range: 135, reloadTime: 2.9, explosive: true, selfDamage: true, blastRadius: 12.5, rocketSpeed: 58, unlocked: true },
 ];
 
 export const WEAPON_UPGRADES = {

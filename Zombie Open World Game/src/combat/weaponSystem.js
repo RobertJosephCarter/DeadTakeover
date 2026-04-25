@@ -8,13 +8,13 @@ export function getActiveWeapon(player) {
 export function getWeaponReserveCap(weapon) {
   if (!weapon) return 120;
   const baseCaps = {
-    Rifle: 240,
-    Pistol: 168,
-    Shotgun: 72,
-    Crossbow: 40,
-    Flamethrower: 600,
-    Sniper: 50,
-    Rocket: 10,
+    Rifle: 300,
+    Pistol: 210,
+    Shotgun: 80,
+    Crossbow: 56,
+    Flamethrower: 720,
+    Sniper: 70,
+    Rocket: 12,
   };
   return baseCaps[weapon.name] || weapon.magSize * 10;
 }

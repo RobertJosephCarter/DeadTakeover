@@ -2,7 +2,7 @@
 
 const RECIPES = [
   { id: "medkit", name: "Medkit", icon: "🏥", cost: { cloth: 2, chemicals: 1 }, heal: 40, description: "Restores 40 HP" },
-  { id: "ammo_pack", name: "Ammo Pack", icon: "🔫", cost: { scrap: 1, metal: 1 }, description: "Refills current weapon reserve" },
+  { id: "ammo_pack", name: "Ammo Pack", icon: "🔫", cost: { scrap: 1, metal: 1 }, description: "Adds typed reserve ammo to every weapon" },
   { id: "molotov", name: "Molotov", icon: "🔥", cost: { cloth: 1, chemicals: 1 }, description: "Throwable fire bottle (G to throw)" },
   { id: "land_mine", name: "Land Mine", icon: "💣", cost: { scrap: 2, metal: 1 }, description: "Placed trap, 5m trigger radius" },
   { id: "spike_trap", name: "Spike Trap", icon: "🗡️", cost: { wood: 3, scrap: 1 }, description: "Damages zombies that walk over it" },
@@ -109,12 +109,13 @@ function craftRecipe(recipe, materials, player, skills, hooks) {
     const maxHp = 100 + (skills?.health?.value || 0) * 100;
     player.hp = Math.min(player.hp + recipe.heal, maxHp);
   }
-  // Ammo pack: add a flat chunk of reserve so it always does something useful.
-  if (recipe.id === "ammo_pack" && player.weapons && player.weapons[player.activeWeapon]) {
-    const w = player.weapons[player.activeWeapon];
-    const cap = hooks.getWeaponReserveCap?.(w) ?? (w.magSize || 20) * 12;
-    const gain = Math.max(Math.floor(cap * 0.35), (w.magSize || 20) * 2);
-    w.reserve = Math.min(w.reserve + gain, cap);
+  // Ammo pack: adds a useful chunk to every reserve pool.
+  if (recipe.id === "ammo_pack" && player.weapons) {
+    for (const w of player.weapons) {
+      const cap = hooks.getWeaponReserveCap?.(w) ?? (w.magSize || 20) * 12;
+      const gain = Math.max(Math.floor(cap * 0.18), Math.ceil((w.magSize || 20) * 0.8));
+      w.reserve = Math.min(w.reserve + gain, cap);
+    }
     if (typeof hooks.syncPlayerAmmoFields === "function") hooks.syncPlayerAmmoFields(player);
   }
   // Notify hook for crafted items (throwables/placeables handled by caller)

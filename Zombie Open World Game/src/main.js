@@ -50,6 +50,7 @@ const remingtonModelUrl = new URL("../call_of_duty_black_ops_cold_war_-_gallo_sa
 const pistolModelUrl = new URL("../webaverse_pistol.glb", import.meta.url).href;
 
 const canvas = document.querySelector("#game");
+canvas.tabIndex = -1;
 const healthFillEl = document.querySelector("#health-fill");
 const staminaFillEl = document.querySelector("#stamina-fill");
 const statsMetaEl = document.querySelector("#stats-meta");
@@ -82,6 +83,21 @@ const buildHintEl = document.querySelector("#build-hint");
 const missionListEl = document.createElement("div");
 missionListEl.id = "mission-list";
 document.body.appendChild(missionListEl);
+
+/** Objective compass — points to the most urgent nearby world objective. */
+const objectiveCompassEl = document.createElement("div");
+objectiveCompassEl.id = "objective-compass";
+objectiveCompassEl.innerHTML = `
+  <div class="objective-compass-arrow">▲</div>
+  <div class="objective-compass-copy">
+    <div class="objective-compass-label"></div>
+    <div class="objective-compass-distance"></div>
+  </div>
+`;
+document.body.appendChild(objectiveCompassEl);
+const objectiveCompassArrowEl = objectiveCompassEl.querySelector(".objective-compass-arrow");
+const objectiveCompassLabelEl = objectiveCompassEl.querySelector(".objective-compass-label");
+const objectiveCompassDistanceEl = objectiveCompassEl.querySelector(".objective-compass-distance");
 
 /** Weapon slots HUD element — created dynamically since markup is missing. */
 const weaponSlotsEl = document.createElement("div");
@@ -623,7 +639,7 @@ async function loadCityBuildingLibrary() {
   }
 }
 const chunkSize = 60;
-const chunkRadius = 2;
+const chunkRadius = 4;
 const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 48, 48);
 
 const player = {
@@ -657,7 +673,7 @@ const settings = {
   zombieHitDistance: 1.2,
   zombieAttackEvery: 0.7,
   zombieDamage: 7,
-  dayDuration: 180,
+  dayDuration: 720,
   maxZombies: 30,
 };
 
@@ -697,6 +713,9 @@ let isNight = false;
 let hordeNightActive = false;
 let hordeNightTimer = 0;
 let bossAlive = false;
+let footstepTimer = 0;
+let lowAmmoWarning = false;
+let lastDamageTime = -999;
 const grenades = [];
 const arrows = [];
 const rockets = [];
@@ -737,6 +756,9 @@ let lastStreamChunkZ = Number.NaN;
 let minimapRefreshTimer = 0;
 let weaponHudRefreshTimer = 0;
 let missionHudRefreshTimer = 0;
+let objectiveCompassRefreshTimer = 0;
+const lastSafePlayerPosition = new THREE.Vector3(0, 1.8, 0);
+let allowSpawnPositionUntil = 0;
 const playerProgression = loadProgression();
 
 /** Scavenging / Crafting materials */
@@ -753,7 +775,8 @@ const weatherState = {
   active: false,
   type: null,
   intensity: 0,
-  particles: [],
+  particles: null,
+  velocities: null,
   windDir: new THREE.Vector3(1, 0, 0.3).normalize(),
   timer: 0,
   nextChange: 30 + Math.random() * 60,
@@ -788,7 +811,7 @@ if (inventoryUI.closeBtn) {
 // Vehicle system
 const vehicles = [];
 let activeVehicle = null;
-let vehicleInput = { forward: false, backward: false, left: false, right: false };
+let vehicleInput = { forward: false, backward: false, left: false, right: false, brake: false };
 
 const teammates = [];
 /** Calm menu / death screen loop (distinct from in-game map tracks). */
@@ -817,6 +840,7 @@ function clearInputState() {
   keys.clear();
   isADS = false;
   mouseLeftHeld = false;
+  vehicleInput = { forward: false, backward: false, left: false, right: false, brake: false };
 }
 
 // Global registry of in-flight timers so we can cancel them on reset.
@@ -1148,6 +1172,14 @@ function playSfx(name, volume = 1) {
       playNoise(0.05, audioSystem.sfx, { volume: 0.22 * volume, hp: 1200, lp: 5000 });
       playTone(420, 0.06, audioSystem.sfx, { volume: 0.1 * volume, type: "triangle" });
       break;
+    case "footstep":
+      playNoise(0.04, audioSystem.sfx, { volume: 0.06 * volume, hp: 100, lp: 800 });
+      playTone(60 + Math.random() * 30, 0.03, audioSystem.sfx, { volume: 0.04 * volume, type: "triangle" });
+      break;
+    case "footstep_sprint":
+      playNoise(0.06, audioSystem.sfx, { volume: 0.09 * volume, hp: 100, lp: 1000 });
+      playTone(50 + Math.random() * 40, 0.04, audioSystem.sfx, { volume: 0.06 * volume, type: "triangle" });
+      break;
     case "supply_drop":
       playTone(660, 0.35, audioSystem.sfx, { volume: 0.28 * volume, type: "sine", glide: -100 });
       playTone(880, 0.5, audioSystem.sfx, { volume: 0.2 * volume, type: "sine" });
@@ -1158,6 +1190,10 @@ function playSfx(name, volume = 1) {
     case "skill_up":
       playTone(523.25, 0.15, audioSystem.ui, { volume: 0.35 * volume, type: "sine" });
       playTone(659.25, 0.25, audioSystem.ui, { volume: 0.3 * volume, type: "sine" });
+      break;
+    case "teammate_downed":
+      playTone(200, 0.3, audioSystem.sfx, { volume: 0.2 * volume, type: "sawtooth", glide: -80 });
+      playTone(150, 0.4, audioSystem.sfx, { volume: 0.15 * volume, type: "square", glide: -40 });
       break;
     default:
       break;
@@ -1293,6 +1329,7 @@ function setAudioScene(mode) {
 }
 
 function setMenuMode(mode) {
+  menuOverlayEl.inert = false;
   if (mode === "title") {
     gameState = "MENU_TITLE";
     menuTitleEl.textContent = "DeadTakeover";
@@ -1342,6 +1379,9 @@ function startPlaying() {
   paused = false;
   gameState = "PLAYING";
   menuOverlayEl.classList.add("is-hidden");
+  menuOverlayEl.inert = true;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  canvas.focus({ preventScroll: true });
   setAudioScene("playing");
 }
 
@@ -1358,6 +1398,9 @@ function saveRun() {
     playerKills: player.kills,
     playerHp: player.hp,
     playerStamina: player.stamina,
+    playerPosition: player.position.toArray(),
+    playerYaw: player.yaw,
+    playerPitch: player.pitch,
     gameTime,
     materials,
     skills,
@@ -1388,6 +1431,19 @@ function loadRun() {
     player.kills = save.playerKills ?? 0;
     player.hp = save.playerHp ?? 100;
     player.stamina = save.playerStamina ?? 100;
+    if (Array.isArray(save.playerPosition) && save.playerPosition.length >= 3) {
+      const [x, y, z] = save.playerPosition;
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+        player.position.set(x, y, z);
+        clampPlayerToTerrainFloor();
+        markSpawnPositionAllowed();
+        lastStreamChunkX = Number.NaN;
+        lastStreamChunkZ = Number.NaN;
+        ensureChunks();
+      }
+    }
+    player.yaw = Number.isFinite(save.playerYaw) ? save.playerYaw : player.yaw;
+    player.pitch = Number.isFinite(save.playerPitch) ? save.playerPitch : player.pitch;
     gameTime = save.gameTime ?? 0;
     Object.assign(materials, save.materials || materials);
     Object.keys(skills).forEach(k => {
@@ -2259,9 +2315,9 @@ function createTeammate(x, z, index, akTemplate = null, remingtonTemplate = null
     reloadTimer: 0,
     activeWeapon: 0,
     weapons: [
-      { name: "Rifle", ammo: 20, reserve: 200, magSize: 20, damage: 18, fireDelay: 0.2, range: 28, preferredRange: 16, bulletSpeed: 72 },
-      { name: "Pistol", ammo: 12, reserve: 180, magSize: 12, damage: 12, fireDelay: 0.32, range: 16, preferredRange: 9, bulletSpeed: 66 },
-      { name: "Shotgun", ammo: 6, reserve: 30, magSize: 6, damage: 20, fireDelay: 0.85, range: 25, preferredRange: 12, bulletSpeed: 60, pellets: 8 },
+      { name: "Rifle", ammoType: "5.56 AP", ammo: 30, reserve: 240, magSize: 30, damage: 20, fireDelay: 0.16, range: 32, preferredRange: 18, bulletSpeed: 82, pierce: 1 },
+      { name: "Pistol", ammoType: "9mm HP", ammo: 15, reserve: 180, magSize: 15, damage: 14, fireDelay: 0.28, range: 18, preferredRange: 10, bulletSpeed: 72, critChance: 0.12, critMultiplier: 1.6 },
+      { name: "Shotgun", ammoType: "12g Buck", ammo: 8, reserve: 40, magSize: 8, damage: 18, fireDelay: 0.78, range: 25, preferredRange: 12, bulletSpeed: 64, pellets: 10, stagger: 0.2 },
     ],
     visionRange: 34,
     loseRange: 42,
@@ -2270,6 +2326,12 @@ function createTeammate(x, z, index, akTemplate = null, remingtonTemplate = null
     targetMemory: 0,
     lastKnownTargetPosition: new THREE.Vector3(),
     walkPhase: Math.random() * Math.PI * 2,
+    hp: 100,
+    maxHp: 100,
+    downed: false,
+    downedTimer: 0,
+    reviveTimer: 0,
+    beingRevived: false,
   };
 }
 
@@ -2284,6 +2346,48 @@ function noise2D(x, z) {
 function terrainHeight(x, z) {
   if (activeMapConfig.flatTerrain) return 0;
   return noise2D(x, z) * activeMapConfig.heightAmp;
+}
+
+function getPlayerEyeHeight() {
+  return isCrouching ? 1.1 : 1.8;
+}
+
+function clampPlayerToTerrainFloor() {
+  const floor = terrainHeight(player.position.x, player.position.z) + getPlayerEyeHeight();
+  if (player.position.y < floor) {
+    player.position.y = floor;
+    player.velocityY = 0;
+    player.isGrounded = true;
+  }
+  return floor;
+}
+
+function markSpawnPositionAllowed(duration = 0.75) {
+  allowSpawnPositionUntil = gameTime + duration;
+  lastSafePlayerPosition.copy(player.position);
+}
+
+function updateLastSafePlayerPosition() {
+  if (gameState !== "PLAYING" || gameOver || activeVehicle) return;
+  if (!Number.isFinite(player.position.x) || !Number.isFinite(player.position.y) || !Number.isFinite(player.position.z)) return;
+  lastSafePlayerPosition.copy(player.position);
+}
+
+function preventUnexpectedSpawnTeleport() {
+  if (gameState !== "PLAYING" || gameOver || activeVehicle) return;
+  if (gameTime <= allowSpawnPositionUntil) return;
+  const nearSpawnNow = Math.hypot(player.position.x, player.position.z) < 3;
+  const wasAwayFromSpawn = Math.hypot(lastSafePlayerPosition.x, lastSafePlayerPosition.z) > 12;
+  const snappedFar = player.position.distanceTo(lastSafePlayerPosition) > 10;
+  if (nearSpawnNow && wasAwayFromSpawn && snappedFar) {
+    player.position.copy(lastSafePlayerPosition);
+    clampPlayerToTerrainFloor();
+    lastStreamChunkX = Number.NaN;
+    lastStreamChunkZ = Number.NaN;
+    ensureChunks();
+    camera.position.set(player.position.x, player.position.y, player.position.z);
+    messageEl.textContent = "Blocked a bad spawn teleport.";
+  }
 }
 
 const _terrainNormalVec = new THREE.Vector3();
@@ -2364,7 +2468,7 @@ function makeChunk(cx, cz) {
   const normals = mesh.geometry.attributes.normal;
   for (let i = 0; i < positions.count; i += 1) {
     const vx = positions.getX(i) + mesh.position.x;
-    const vz = positions.getY(i) + mesh.position.z;
+    const vz = mesh.position.z - positions.getY(i);
     const h = terrainHeight(vx, vz);
     positions.setZ(i, h);
 
@@ -2565,6 +2669,7 @@ function buildMapSelectUi() {
 }
 
 function resetWorldForNewMap() {
+  if (gameState === "PLAYING") return;
   // Cancel all in-flight timers (boss spawn setTimeout, acid spit intervals, etc.)
   clearPendingTimers();
   // Wipe the static collider table — every world object will be re-registered at spawn.
@@ -2618,6 +2723,7 @@ function resetWorldForNewMap() {
   teammates.length = 0;
 
   player.position.set(0, 1.8, 0);
+  markSpawnPositionAllowed();
   player.hp = 100;
   player.stamina = 100;
   player.yaw = Math.PI;
@@ -2644,6 +2750,7 @@ function resetWorldForNewMap() {
   nextWaveTimer = 0;
   spawnTimer = 0;
   gameTime = 0;
+  lastDamageTime = -999;
   player.kills = 0;
   const defaults = initDefaultWeapons();
   for (let i = 0; i < Math.min(player.weapons.length, defaults.length); i++) {
@@ -2747,7 +2854,7 @@ function resetWorldForNewMap() {
   }
   vehicles.length = 0;
   activeVehicle = null;
-  vehicleInput = { forward: false, backward: false, left: false, right: false };
+  vehicleInput = { forward: false, backward: false, left: false, right: false, brake: false };
   clearWeather();
 
   // Reset materials
@@ -2795,6 +2902,7 @@ function resetWorldForNewMap() {
   for (let i = 0; i < 3; i += 1) {
     teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplateRef, remingtonTemplateRef, pistolTemplateRef));
   }
+  spawnVehiclesForMap();
 }
 
 function addZombie(x, z, forceType = null) {
@@ -2955,6 +3063,13 @@ function addZombie(x, z, forceType = null) {
   else if (type === "boomer") { hp = 60; maxHp = 60; speed = settings.zombieSpeed * 0.7; damage = 6; }
   else if (type === "screamer") { hp = 40; maxHp = 40; speed = settings.zombieSpeed * 1.2; damage = 3; }
 
+  // Wave-based HP scaling: +8% per wave after wave 3
+  if (wave > 3) {
+    const hpMult = 1 + (wave - 3) * 0.08;
+    hp = Math.round(hp * hpMult);
+    maxHp = hp;
+  }
+
   zombies.push({
     mesh: group,
     leftArm,
@@ -2989,7 +3104,10 @@ function addZombie(x, z, forceType = null) {
     isFleeing: type === "screamer" ? true : false,
     ignoreBarricades: type === "juggernaut",
     boomerExploded: false,
+    leapTime: 0,
+    leapVelocity: new THREE.Vector3(),
   });
+  return zombies[zombies.length - 1];
 }
 
 function spawnZombieNearPlayer() {
@@ -3002,18 +3120,31 @@ function spawnZombieNearPlayer() {
 import { createVehicle, updateVehicle, damageVehicle, repairVehicle, refuelVehicle, upgradeVehicleArmor, upgradeVehicleEngine, VEHICLE_TYPES } from "./entities/vehicle.js";
 
 function spawnVehiclesForMap() {
-  const count = activeMapConfig.id === "outbreak_city" ? 4 : 2;
-  for (let i = 0; i < count; i++) {
+  const countByMap = {
+    outbreak_city: 6,
+    ruins: 4,
+    badlands: 3,
+    dead_valley: 2,
+    frost: 2,
+    meadows: 2,
+  };
+  const count = countByMap[activeMapConfig.id] ?? 2;
+  const types = Object.values(VEHICLE_TYPES);
+  let spawned = 0;
+  let attempts = 0;
+  while (spawned < count && attempts < count * 10) {
+    attempts += 1;
     const angle = Math.random() * Math.PI * 2;
-    const dist = 20 + Math.random() * 60;
+    const dist = 22 + Math.random() * (activeMapConfig.id === "outbreak_city" ? 85 : 68);
     const x = Math.cos(angle) * dist;
     const z = Math.sin(angle) * dist;
-    const types = [VEHICLE_TYPES.JEEP, VEHICLE_TYPES.TRUCK, VEHICLE_TYPES.MOTORCYCLE];
+    if (Math.hypot(x, z) < 18 || !isCircleClearOfStatics(x, z, VEHICLE_RADIUS + 0.9)) continue;
     const type = types[Math.floor(Math.random() * types.length)];
     const vehicle = createVehicle(type, x, z, terrainHeight);
     vehicles.push(vehicle);
     scene.add(vehicle.mesh);
     registerStaticCollider(vehicle.mesh, 0.15, "vehicle");
+    spawned += 1;
   }
 }
 
@@ -3021,6 +3152,7 @@ function findNearestVehicle() {
   let nearest = null;
   let nearestDist = 5.0; // Max interaction distance
   for (const v of vehicles) {
+    if (v.destroyed) continue;
     const d = player.position.distanceTo(v.mesh.position);
     if (d < nearestDist) {
       nearestDist = d;
@@ -3037,11 +3169,20 @@ function enterVehicle(vehicle) {
   activeVehicle = vehicle;
   // Remove the vehicle's collider while being driven (player is inside it)
   removeStaticCollider(vehicle.mesh);
+  player.moveVelocity.set(0, 0, 0);
+  syncPlayerToVehicle(vehicle);
   camera.position.copy(vehicle.mesh.position);
   camera.position.y += 2.5;
   firstPersonWeapon.rig.visible = false;
   messageEl.textContent = `Entered ${vehicle.type.toUpperCase()}! WASD drive, Space brake, F exit, H horn.`;
   return true;
+}
+
+function syncPlayerToVehicle(vehicle) {
+  player.position.set(vehicle.mesh.position.x, vehicle.mesh.position.y + 1.8, vehicle.mesh.position.z);
+  player.velocityY = 0;
+  player.isGrounded = true;
+  player.yaw = vehicle.yaw;
 }
 
 function exitVehicle() {
@@ -3053,44 +3194,53 @@ function exitVehicle() {
   const side = new THREE.Vector3(Math.cos(v.yaw + Math.PI / 2), 0, Math.sin(v.yaw + Math.PI / 2));
   player.position.copy(v.mesh.position).addScaledVector(side, 2.5);
   player.position.y = terrainHeight(player.position.x, player.position.z) + 1.8;
+  player.yaw = v.yaw;
   activeVehicle = null;
+  vehicleInput = { forward: false, backward: false, left: false, right: false, brake: false };
   firstPersonWeapon.rig.visible = true;
   // Re-register the vehicle as a static collider if it's not destroyed
   if (!v.destroyed) registerStaticCollider(v.mesh, 0.15, "vehicle");
   messageEl.textContent = "Exited vehicle.";
 }
 
+function triggerVehicleExplosion(vehicle) {
+  if (!vehicle || vehicle.hasExploded) return;
+  vehicle.hasExploded = true;
+  vehicle.destroyed = true;
+  vehicle.speed = 0;
+  removeStaticCollider(vehicle.mesh);
+  const explosionPos = vehicle.mesh.position.clone();
+  createExplosion(explosionPos, 6, 60);
+  playSpatialSfx("explosion", explosionPos, 1);
+  topCenterAlertEl.textContent = "VEHICLE DESTROYED!";
+  alertTimer = 2.5;
+  if (activeVehicle === vehicle) {
+    exitVehicle();
+    player.hp = Math.max(0, player.hp - 25);
+    player.damageFlash = 1.0;
+    lastDamageTime = gameTime;
+    messageEl.textContent = "Vehicle exploded! You were thrown clear!";
+    if (player.hp <= 0) killPlayer("Caught in the vehicle explosion.");
+  }
+}
+
 function updateVehicles(dt) {
   for (const vehicle of vehicles) {
-    if (vehicle.destroyed) continue;
+    if (vehicle.destroyed) {
+      continue;
+    }
     if (activeVehicle === vehicle) {
       updateVehicle(vehicle, dt, vehicleInput, terrainHeight);
-      // Camera follows vehicle (reused vectors)
-      const camOffset = _tempVec1.set(0, 3.5, 5.5);
-      camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.yaw);
-      const targetPos = _tempVec2.copy(vehicle.mesh.position).add(_tempVec3.set(0, 1, 0));
-      camera.position.lerp(_tempVec4.copy(vehicle.mesh.position).add(camOffset), 0.15);
-      camera.lookAt(targetPos);
+      syncPlayerToVehicle(vehicle);
     }
     // Zombies damage vehicles
     for (const zombie of zombies) {
       const d = zombie.mesh.position.distanceTo(vehicle.mesh.position);
       if (d < 2.5) {
+        const wasDestroyed = vehicle.destroyed;
         const destroyed = damageVehicle(vehicle, zombie.damage * dt);
-        if (destroyed && !vehicle.destroyed) {
-          vehicle.destroyed = true;
-          removeStaticCollider(vehicle.mesh);
-          createExplosion(vehicle.mesh.position, 6, 60);
-          playSpatialSfx("explosion", vehicle.mesh.position, 1);
-          topCenterAlertEl.textContent = "💥 VEHICLE DESTROYED!";
-          alertTimer = 2.5;
-          if (activeVehicle === vehicle) {
-            exitVehicle();
-            player.hp = Math.max(0, player.hp - 25);
-            player.damageFlash = 1.0;
-            messageEl.textContent = "Vehicle exploded! You were thrown clear!";
-            if (player.hp <= 0) killPlayer("Caught in the vehicle explosion.");
-          }
+        if (destroyed && !wasDestroyed) {
+          triggerVehicleExplosion(vehicle);
         }
       }
     }
@@ -3103,10 +3253,25 @@ function updateVehicles(dt) {
       if (v.hp <= -30) {
         removeStaticCollider(v.mesh);
         scene.remove(v.mesh);
+        disposeOwnedObject3D(v.mesh);
         vehicles.splice(i, 1);
       }
     }
   }
+}
+
+function findNearestDownedTeammate(maxDistance = 2.5) {
+  let nearest = null;
+  let nearestDistSq = maxDistance * maxDistance;
+  for (const mate of teammates) {
+    if (!mate.downed) continue;
+    const d2 = mate.mesh.position.distanceToSquared(player.position);
+    if (d2 < nearestDistSq) {
+      nearestDistSq = d2;
+      nearest = mate;
+    }
+  }
+  return nearest;
 }
 
 function bulletPoolKey(radius, colorHex) {
@@ -3170,6 +3335,10 @@ function spawnBullet(origin, direction, damage, options = {}) {
     color = 0xffd08a,
     radius = 0.05,
     owner = "player",
+    pierce = 0,
+    stagger = 0,
+    crit = false,
+    ammoType = "",
   } = options;
 
   const mesh = acquireBulletMesh(radius, color);
@@ -3183,6 +3352,10 @@ function spawnBullet(origin, direction, damage, options = {}) {
   rec.life = life;
   rec.damage = damage;
   rec.owner = owner;
+  rec.pierce = pierce;
+  rec.stagger = stagger;
+  rec.crit = crit;
+  rec.ammoType = ammoType;
   bullets.push(rec);
 }
 
@@ -3208,6 +3381,7 @@ const _hitZoneCenters = Array.from({ length: 6 }, () => new THREE.Vector3());
 const _worldAxisY = new THREE.Vector3(0, 1, 0);
 const _teammateFollowTarget = new THREE.Vector3();
 const _teammateTargetPosition = new THREE.Vector3();
+const _teammateRetreatGoal = new THREE.Vector3();
 
 function hasLineOfSight(origin, targetPosition) {
   _losDirection.subVectors(targetPosition, origin);
@@ -3288,7 +3462,7 @@ function shoot() {
   const wn = weapon.name;
   if (wn === "Crossbow") playSfx("gunshot_player", 0.45);
   else if (wn === "Flamethrower") playSfx("gunshot_player", 0.5);
-  else if (wn === "Rocket") playSfx("explosion", 0.55);
+  else if (wn === "Rocket") playSfx("grenade_throw", 0.7);
   else playSfx(isShotgunNow ? "shotgun_player" : "gunshot_player", 1);
   player.shootCooldown = weapon.fireDelay;
   player.bobTime += 0.03;
@@ -3328,21 +3502,21 @@ function shoot() {
 
   if (wName === "Crossbow") {
     // Arrow projectile — slow, visible shaft, sticks into zombies
-    spawnArrow(_bulletOrigin, _bulletDirection, weapon.damage);
+    spawnArrow(_bulletOrigin, _bulletDirection, weapon.damage, weapon);
     commitPlayerAmmoFields(player);
     return;
   }
 
   if (wName === "Rocket") {
     // Physical rocket that flies and detonates
-    spawnRocket(_bulletOrigin, _bulletDirection, weapon.damage);
+    spawnRocket(_bulletOrigin, _bulletDirection, weapon.damage, weapon);
     commitPlayerAmmoFields(player);
     return;
   }
 
   if (wName === "Flamethrower") {
     // Burst of flame puffs in a cone — spawned per shot, damage applied per frame
-    for (let fp = 0; fp < 5; fp++) spawnFlamePuff(_bulletOrigin, _bulletDirection);
+    for (let fp = 0; fp < 5; fp++) spawnFlamePuff(_bulletOrigin, _bulletDirection, weapon);
     commitPlayerAmmoFields(player);
     return;
   }
@@ -3356,11 +3530,13 @@ function shoot() {
       _bulletPelletDir.z += (Math.random() - 0.5) * spread * 2;
       _bulletPelletDir.normalize();
       spawnBullet(_bulletOrigin, _bulletPelletDir, weapon.damage, {
-        speed: 58,
-        life: weapon.range / 58 + 0.08,
+        speed: weapon.pelletSpeed || 64,
+        life: weapon.range / (weapon.pelletSpeed || 64) + 0.08,
         color: 0xffaa44,
         radius: 0.04,
         owner: "player",
+        stagger: weapon.stagger || 0,
+        ammoType: weapon.ammoType,
       });
     }
   } else {
@@ -3373,13 +3549,20 @@ function shoot() {
     }
     // Sniper gets a large, fast, glowing tracer round
     const isSniper = wName === "Sniper";
-    spawnBullet(_bulletOrigin, _bulletDirection, weapon.damage, {
-      speed: isSniper ? 200 : 75,
-      life: isSniper ? weapon.range / 200 + 0.25 : weapon.range / 75 + 0.18,
-      color: isSniper ? 0x44ddff : 0xffd08a,
-      radius: isSniper ? 0.085 : 0.05,
+    const isCrit = (weapon.critChance || 0) > 0 && Math.random() < weapon.critChance;
+    const shotDamage = isCrit ? weapon.damage * (weapon.critMultiplier || 1.6) : weapon.damage;
+    const shotSpeed = weapon.bulletSpeed || (isSniper ? 200 : 75);
+    spawnBullet(_bulletOrigin, _bulletDirection, shotDamage, {
+      speed: shotSpeed,
+      life: weapon.range / shotSpeed + 0.18,
+      color: isCrit ? 0xfff0a8 : isSniper ? 0x44ddff : wName === "Rifle" ? 0xffe2a8 : 0xffd08a,
+      radius: isSniper ? 0.075 : 0.05,
       owner: "player",
+      pierce: weapon.pierce || 0,
+      crit: isCrit,
+      ammoType: weapon.ammoType,
     });
+    if (isCrit) messageEl.textContent = "Critical hollow-point hit ready.";
   }
   commitPlayerAmmoFields(player);
 }
@@ -3502,6 +3685,18 @@ function movePlayer(dt) {
   if (sprinting) player.stamina = Math.max(0, player.stamina - 22 * dt);
   else player.stamina = Math.min(100, player.stamina + 16 * dt);
 
+  // Footstep sounds
+  if (moving && player.isGrounded) {
+    const stepInterval = sprinting ? 0.28 : isCrouching ? 0.55 : 0.38;
+    footstepTimer -= dt;
+    if (footstepTimer <= 0) {
+      footstepTimer = stepInterval;
+      playSfx(sprinting ? "footstep_sprint" : "footstep", 1);
+    }
+  } else {
+    footstepTimer = 0;
+  }
+
   if (moving) {
     const inputLen = Math.sqrt(dx * dx + dz * dz) || 1;
     const inX = dx / inputLen;
@@ -3529,13 +3724,7 @@ function movePlayer(dt) {
 
   player.velocityY += settings.gravity * dt;
   player.position.y += player.velocityY * dt;
-  const eyeHeight = isCrouching ? 1.1 : 1.8;
-  const floor = terrainHeight(player.position.x, player.position.z) + eyeHeight;
-  if (player.position.y < floor) {
-    player.position.y = floor;
-    player.velocityY = 0;
-    player.isGrounded = true;
-  }
+  clampPlayerToTerrainFloor();
 
   camera.position.set(player.position.x, player.position.y, player.position.z);
   camera.position.y += Math.sin(player.bobTime) * (moving ? 0.045 : 0);
@@ -3547,6 +3736,8 @@ function movePlayer(dt) {
 function maybeDropPickup(position) {
   if (Math.random() < 0.35) {
     const onCity = activeMapConfig.id === "outbreak_city";
+    const ammoIndex = Math.floor(Math.random() * player.weapons.length);
+    const ammoWeapon = player.weapons[ammoIndex];
     const pickup = new THREE.Mesh(
       onCity
         ? new THREE.BoxGeometry(0.48, 0.2, 0.34)
@@ -3561,7 +3752,7 @@ function maybeDropPickup(position) {
     pickup.position.y = terrainHeight(position.x, position.z) + 0.4;
     pickup.castShadow = true;
     scene.add(pickup);
-    pickups.push({ mesh: pickup, spin: Math.random() * 2 + 1 });
+    pickups.push({ mesh: pickup, spin: Math.random() * 2 + 1, ammoIndex, ammoType: ammoWeapon?.ammoType || ammoWeapon?.name || "Ammo" });
   }
 }
 
@@ -3596,19 +3787,34 @@ function updateBullets(dt) {
       if (hit) {
         const hs = hit.part === "head";
         applyZombieDamage(zi, bullet.damage * hit.multiplier, hs);
-        releaseBulletRecord(bullet);
-        bullets.splice(i, 1);
+        const zombieSurvived = zombies[zi] === zombie;
+        if (zombieSurvived && bullet.stagger) {
+          zombie.staggerTimer = Math.max(zombie.staggerTimer || 0, bullet.stagger);
+        }
         if (bullet.owner === "player") {
           triggerHitMarker(hs);
           if (hs) {
             addScreenShake(0.08);
             triggerHitStop(0.045);
           }
+          if (zombieSurvived && bullet.crit) {
+            spawnFloatingDamage(zombie.mesh.position.clone().add(new THREE.Vector3(0, 2.8, 0)), bullet.damage, true);
+            addScreenShake(0.05);
+          }
           if (hs) score += 10;
           messageEl.textContent =
-            hs ? `Headshot! +${isADS ? 160 : 150}pts` : hit.part === "torso" ? "Body hit." : "Limb hit.";
+            bullet.crit ? "Critical hit!" : hs ? `Headshot! +${isADS ? 160 : 150}pts` : hit.part === "torso" ? "Body hit." : "Limb hit.";
         }
         hitZombie = true;
+        bullet.pierce = Math.max(0, bullet.pierce || 0);
+        if (bullet.pierce > 0) {
+          bullet.pierce -= 1;
+          bullet.damage *= 0.72;
+          spawnSparks(bullet.mesh.position, 2);
+        } else {
+          releaseBulletRecord(bullet);
+          bullets.splice(i, 1);
+        }
         break;
       }
     }
@@ -3713,6 +3919,18 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
   }
 }
 
+function igniteZombie(zombie, seconds = 3, dps = 10) {
+  if (!zombie) return;
+  zombie.burnTimer = Math.max(zombie.burnTimer || 0, seconds);
+  zombie.burnDps = Math.max(zombie.burnDps || 0, dps);
+}
+
+function bleedZombie(zombie, seconds = 3, dps = 7) {
+  if (!zombie) return;
+  zombie.bleedTimer = Math.max(zombie.bleedTimer || 0, seconds);
+  zombie.bleedDps = Math.max(zombie.bleedDps || 0, dps);
+}
+
 function segmentSphereHit(a, b, center, radius) {
   _segAb.subVectors(b, a);
   _segAc.subVectors(center, a);
@@ -3787,16 +4005,44 @@ function updatePickups(dt) {
         continue;
       }
       // Refill all reserves so weapon switching never leaves you "unable to reload".
-      for (const w of player.weapons) {
-        const gain = w.name === "Shotgun" ? 4 : 12;
-        w.reserve = Math.min(getWeaponReserveCap(w), w.reserve + gain);
-      }
+      const ammoWeapon = player.weapons[p.ammoIndex] || player.weapons[player.activeWeapon];
+      const cap = getWeaponReserveCap(ammoWeapon);
+      const gain = Math.max(Math.ceil((ammoWeapon.magSize || 10) * 1.35), Math.floor(cap * 0.14));
+      ammoWeapon.reserve = Math.min(cap, ammoWeapon.reserve + gain);
       syncPlayerAmmoFields(player);
       player.hp = Math.min(getPlayerMaxHealth(), player.hp + 8);
       scene.remove(p.mesh);
       disposeOwnedObject3D(p.mesh);
       pickups.splice(i, 1);
-      messageEl.textContent = "Picked up supplies (+all ammo reserves, +hp).";
+      messageEl.textContent = `Picked up ${gain} ${ammoWeapon.ammoType || ammoWeapon.name} ammo and +hp.`;
+    }
+  }
+}
+
+function separateTeammate(mate) {
+  const sepRadius = 1.35;
+  const sepRadiusSq = sepRadius * sepRadius;
+  for (const other of teammates) {
+    if (other === mate || other.downed) continue;
+    const dx = mate.mesh.position.x - other.mesh.position.x;
+    const dz = mate.mesh.position.z - other.mesh.position.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > 0.0001 && d2 < sepRadiusSq) {
+      const d = Math.sqrt(d2);
+      const push = (sepRadius - d) / d * 0.5;
+      mate.mesh.position.x += dx * push;
+      mate.mesh.position.z += dz * push;
+    }
+  }
+  if (!activeVehicle) {
+    const dx = mate.mesh.position.x - player.position.x;
+    const dz = mate.mesh.position.z - player.position.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > 0.0001 && d2 < sepRadiusSq) {
+      const d = Math.sqrt(d2);
+      const push = (sepRadius - d) / d * 0.65;
+      mate.mesh.position.x += dx * push;
+      mate.mesh.position.z += dz * push;
     }
   }
 }
@@ -3814,6 +4060,53 @@ function updateTeammates(dt) {
         w.ammo += load;
         w.reserve -= load;
       }
+    }
+
+    // Downed teammate logic
+    if (mate.downed) {
+      mate.downedTimer -= dt;
+      if (mate.downedTimer <= 0) {
+        // Teammate dies permanently
+        scene.remove(mate.mesh);
+        const idx = teammates.indexOf(mate);
+        if (idx >= 0) teammates.splice(idx, 1);
+        addKillFeedEntry("Teammate lost...", "#ff3333");
+        messageEl.textContent = "A teammate didn't make it...";
+        continue;
+      }
+      // Check if player is close enough to revive
+      const distToPlayer = mate.mesh.position.distanceTo(player.position);
+      if (!activeVehicle && distToPlayer < 2.5 && keys.has("KeyF")) {
+        mate.beingRevived = true;
+        mate.reviveTimer += dt;
+        if (mate.reviveTimer >= 3) {
+          // Revived!
+          mate.downed = false;
+          mate.hp = 50;
+          mate.downedTimer = 0;
+          mate.reviveTimer = 0;
+          mate.beingRevived = false;
+          mate.mesh.rotation.x = 0;
+          mate.mesh.position.y = terrainHeight(mate.mesh.position.x, mate.mesh.position.z);
+          messageEl.textContent = "Teammate revived!";
+          addKillFeedEntry("Teammate revived!", "#44ff88");
+          playSfx("skill_up", 0.6);
+        }
+      } else {
+        mate.beingRevived = false;
+        mate.reviveTimer = Math.max(0, mate.reviveTimer - dt * 2);
+      }
+      // Visual: downed teammate lies on ground
+      mate.mesh.rotation.x = Math.PI / 2 * 0.65;
+      mate.mesh.position.y = terrainHeight(mate.mesh.position.x, mate.mesh.position.z) + 0.3;
+      continue; // Skip normal behavior when downed
+    }
+
+    mate.mesh.rotation.x *= Math.exp(-dt * 10);
+
+    // Slow auto-heal when not in combat
+    if (!mate.currentTarget && mate.hp < mate.maxHp) {
+      mate.hp = Math.min(mate.maxHp, mate.hp + 3 * dt);
     }
 
     mate.rifle.muzzleFlash.material.opacity *= Math.exp(-dt * 28);
@@ -3868,7 +4161,12 @@ function updateTeammates(dt) {
       if (preferredWeapon < 0 || preferredWeapon >= mate.weapons.length) preferredWeapon = mate.activeWeapon;
       mate.activeWeapon = preferredWeapon;
       const weapon = mate.weapons[mate.activeWeapon];
-      if (d2 > weapon.preferredRange * weapon.preferredRange && mate.mesh.position.distanceToSquared(player.position) < 14 * 14) {
+      if (d2 < 7 * 7) {
+        _teammateRetreatGoal
+          .copy(mate.mesh.position)
+          .sub(_tempVec1.copy(targetPosition).sub(mate.mesh.position).setY(0).normalize().multiplyScalar(4.5));
+        moveGoal = _teammateRetreatGoal;
+      } else if (d2 > weapon.preferredRange * weapon.preferredRange && mate.mesh.position.distanceToSquared(player.position) < 14 * 14) {
         moveGoal = targetPosition;
       }
     }
@@ -3880,6 +4178,7 @@ function updateTeammates(dt) {
       mate.mesh.position.addScaledVector(toGoal.normalize(), Math.min(4.8, dist * 0.9) * dt);
       mate.walkPhase += dt * 8;
     }
+    separateTeammate(mate);
     mate.mesh.position.y = terrainHeight(mate.mesh.position.x, mate.mesh.position.z);
 
     const aimTarget = mate.currentTarget ? mate.currentTarget.mesh.position : moveGoal;
@@ -4002,6 +4301,7 @@ function updateZombies(dt) {
       if (dToPlayer < puddle.radius) {
         player.hp = Math.max(0, player.hp - puddle.damagePerSecond * dt);
         player.damageFlash = 0.5;
+        lastDamageTime = gameTime;
         if (player.hp <= 0) killPlayer("Dissolved by acid...");
       }
     }
@@ -4019,11 +4319,31 @@ function updateZombies(dt) {
   for (let i = zombies.length - 1; i >= 0; i -= 1) {
     const zombie = zombies[i];
     zombie.attackTimer -= dt;
+    if (zombie.staggerTimer > 0) zombie.staggerTimer = Math.max(0, zombie.staggerTimer - dt);
+    if (zombie.burnTimer > 0) {
+      zombie.burnTimer = Math.max(0, zombie.burnTimer - dt);
+      applyZombieDamage(i, (zombie.burnDps || 0) * dt);
+      if (!zombies[i]) continue;
+    }
+    if (zombie.bleedTimer > 0) {
+      zombie.bleedTimer = Math.max(0, zombie.bleedTimer - dt);
+      applyZombieDamage(i, (zombie.bleedDps || 0) * dt);
+      if (!zombies[i]) continue;
+    }
 
-    // Check distractions first (noise makers attract zombies)
-    _zombieTargetPos.copy(player.position);
-    let targetIsPlayer = true;
-    let nearestDistanceSq = zombie.mesh.position.distanceToSquared(player.position);
+    // Pick a target kind explicitly so stealth, vehicles, survivors, and teammates
+    // don't collapse into a single "not player" bucket.
+    let targetKind = "wander";
+    let targetMate = null;
+    const playerTargetPosition = activeVehicle ? activeVehicle.mesh.position : player.position;
+    const playerDetectionRange = activeVehicle ? 72 : isCrouching ? 12 : 52;
+    const playerDistSq = zombie.mesh.position.distanceToSquared(playerTargetPosition);
+    let nearestDistanceSq = Infinity;
+    if (playerDistSq < playerDetectionRange * playerDetectionRange) {
+      nearestDistanceSq = playerDistSq;
+      _zombieTargetPos.copy(playerTargetPosition);
+      targetKind = activeVehicle ? "vehicle" : "player";
+    }
 
     // Check for distractions
     for (const dist of distractions) {
@@ -4032,18 +4352,21 @@ function updateZombies(dt) {
         if (d2 < nearestDistanceSq && d2 < 60 * 60) {
           nearestDistanceSq = d2;
           _zombieTargetPos.copy(dist.position);
-          targetIsPlayer = false;
+          targetKind = "distraction";
+          targetMate = null;
         }
       }
     }
 
     // Normal targeting
     for (const mate of teammates) {
+      if (mate.downed) continue;
       const d2 = zombie.mesh.position.distanceToSquared(mate.mesh.position);
       if (d2 < nearestDistanceSq) {
         nearestDistanceSq = d2;
         _zombieTargetPos.copy(mate.mesh.position);
-        targetIsPlayer = false;
+        targetKind = "teammate";
+        targetMate = mate;
       }
     }
 
@@ -4054,15 +4377,24 @@ function updateZombies(dt) {
       if (d2 < nearestDistanceSq) {
         nearestDistanceSq = d2;
         _zombieTargetPos.copy(_zombieSurvivorPos);
-        targetIsPlayer = false;
+        targetKind = "survivor";
+        targetMate = null;
       }
+    }
+
+    if (targetKind === "wander") {
+      _zombieTargetPos.set(
+        zombie.mesh.position.x + Math.sin(gameTime * 0.7 + zombie.wanderSeed) * 5,
+        zombie.mesh.position.y,
+        zombie.mesh.position.z + Math.cos(gameTime * 0.55 + zombie.wanderSeed) * 5,
+      );
     }
 
     const toTarget = getV3().subVectors(_zombieTargetPos, zombie.mesh.position);
     toTarget.y = 0;
     const distance = toTarget.length();
 
-    const nightSpeedMult = (isNight || hordeNightActive) ? 1.45 : 1.0;
+    const nightSpeedMult = ((isNight || hordeNightActive) ? 1.45 : 1.0) * (zombie.staggerTimer > 0 ? 0.35 : 1.0);
 
     // Special infected behaviors
     if (zombie.type === "spitter") {
@@ -4106,9 +4438,10 @@ function updateZombies(dt) {
           zombie.hunterLeaping = false;
         }
         // Check collision with player
-        if (targetIsPlayer && distance < 1.8 && zombie.leapTime > 0 && !gameOver) {
+        if (targetKind === "player" && distance < 1.8 && zombie.leapTime > 0 && !gameOver) {
           player.hp = Math.max(0, player.hp - 18);
           player.damageFlash = 0.9;
+          lastDamageTime = gameTime;
           addScreenShake(0.4);
           triggerHitStop(0.05);
           messageEl.textContent = "HUNTER POUNCED!";
@@ -4130,9 +4463,10 @@ function updateZombies(dt) {
           zombie.isCharging = false;
         }
         // Check player collision
-        if (targetIsPlayer && distance < 2 && !gameOver) {
+        if (targetKind === "player" && distance < 2 && !gameOver) {
           player.hp = Math.max(0, player.hp - zombie.damage * 2);
           player.damageFlash = 0.9;
+          lastDamageTime = gameTime;
           addScreenShake(0.6);
           triggerHitStop(0.075);
           // Knockback
@@ -4202,7 +4536,27 @@ function updateZombies(dt) {
       }
     }
 
+    resolveZombieObstacles(zombie);
     zombie.mesh.position.y = terrainHeight(zombie.mesh.position.x, zombie.mesh.position.z);
+
+    // Zombie-zombie separation: push apart to prevent stacking
+    const sepRadius = 1.4;
+    const sepRadiusSq = sepRadius * sepRadius;
+    const sepForce = 2.5;
+    for (let j = 0; j < zombies.length; j++) {
+      if (j === i) continue;
+      const other = zombies[j];
+      const dx = zombie.mesh.position.x - other.mesh.position.x;
+      const dz = zombie.mesh.position.z - other.mesh.position.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < sepRadiusSq && d2 > 0.001) {
+        const d = Math.sqrt(d2);
+        const push = (sepRadius - d) / d * sepForce * dt;
+        zombie.mesh.position.x += dx * push;
+        zombie.mesh.position.z += dz * push;
+      }
+    }
+
     if (toTarget.lengthSq() > 0.0001) zombie.mesh.rotation.y = Math.atan2(toTarget.x, toTarget.z);
 
     zombie.walkPhase += dt * 7;
@@ -4249,13 +4603,15 @@ function updateZombies(dt) {
     }
 
     const attackDistance = zombie.type === "brute" ? 1.45 : settings.zombieHitDistance;
-    if (!gameOver && distance < attackDistance && zombie.attackTimer <= 0 && !zombie.hunterLeaping && !zombie.isCharging) {
+    const effectiveAttackDistance = targetKind === "vehicle" ? 2.4 : attackDistance;
+    if (!gameOver && distance < effectiveAttackDistance && zombie.attackTimer <= 0 && !zombie.hunterLeaping && !zombie.isCharging) {
       zombie.attackTimer = settings.zombieAttackEvery;
       zombie.attackAnimating = true;
       zombie.attackAnimTime = 0;
-      if (targetIsPlayer) {
+      if (targetKind === "player") {
         player.hp = Math.max(0, player.hp - zombie.damage);
         player.damageFlash = 0.9;
+        lastDamageTime = gameTime;
         addScreenShake(
           zombie.type === "juggernaut" ? 0.28 : zombie.type === "brute" ? 0.18 : zombie.type === "charger" ? 0.16 : 0.08,
         );
@@ -4264,14 +4620,33 @@ function updateZombies(dt) {
         }
         messageEl.textContent = zombie.type === "brute" ? "Brute smash!" : zombie.type === "spitter" ? "Spitter clawed you!" : zombie.type === "hunter" ? "Hunter slashed!" : zombie.type === "charger" ? "Charger punched!" : zombie.type === "crawler" ? "Crawler bit you!" : zombie.type === "juggernaut" ? "Juggernaut crushed you!" : zombie.type === "boomer" ? "Boomer clawed you!" : zombie.type === "screamer" ? "Screamer scratched you!" : "A zombie hit you!";
         if (player.hp <= 0) killPlayer("A zombie got you.");
-      } else if (isSurvivorAlive(eventDirector) && distance < attackDistance && eventDirector.survivorPosition) {
-        const sPos = new THREE.Vector3(eventDirector.survivorPosition.x, eventDirector.survivorPosition.y, eventDirector.survivorPosition.z);
-        if (zombie.mesh.position.distanceTo(sPos) < attackDistance + 1) {
+      } else if (targetKind === "vehicle" && activeVehicle) {
+        const wasDestroyed = activeVehicle.destroyed;
+        const destroyed = damageVehicle(activeVehicle, zombie.damage * 1.6);
+        if (destroyed && !wasDestroyed) triggerVehicleExplosion(activeVehicle);
+        else messageEl.textContent = "Vehicle under attack!";
+      } else if (targetKind === "survivor" && isSurvivorAlive(eventDirector) && eventDirector.survivorPosition) {
+        _zombieSurvivorPos.set(eventDirector.survivorPosition.x, eventDirector.survivorPosition.y, eventDirector.survivorPosition.z);
+        if (zombie.mesh.position.distanceTo(_zombieSurvivorPos) < attackDistance + 1) {
           const sHP = damageSurvivor(eventDirector, zombie.damage);
           messageEl.textContent = `Survivor under attack! HP: ${Math.max(0, Math.floor(sHP))}`;
         }
-      } else {
-        messageEl.textContent = "Teammate engaged!";
+      } else if (targetKind === "teammate" && targetMate && !targetMate.downed) {
+        const mateDistSq = zombie.mesh.position.distanceToSquared(targetMate.mesh.position);
+        if (mateDistSq < (attackDistance + 1) * (attackDistance + 1)) {
+          targetMate.hp = Math.max(0, targetMate.hp - zombie.damage);
+          if (targetMate.hp <= 0) {
+            targetMate.downed = true;
+            targetMate.downedTimer = 30; // 30 seconds to revive before death
+            targetMate.reviveTimer = 0;
+            targetMate.beingRevived = false;
+            messageEl.textContent = "Teammate downed! Hold F near them to revive!";
+            addKillFeedEntry(`Teammate downed by ${zombie.type}!`, "#ff6644");
+            playSfx("teammate_downed", 0.8);
+          } else {
+            messageEl.textContent = "Teammate taking damage!";
+          }
+        }
       }
     }
   }
@@ -4389,11 +4764,18 @@ function updateWeather(dt) {
 
 function clearWeather() {
   if (weatherState.particles) {
-    scene.remove(weatherState.particles);
-    weatherState.particles.geometry.dispose();
-    weatherState.particles.material.dispose();
+    const particleObjects = Array.isArray(weatherState.particles)
+      ? weatherState.particles
+      : [weatherState.particles];
+    for (const particleObject of particleObjects) {
+      if (!particleObject) continue;
+      scene.remove(particleObject);
+      particleObject.geometry?.dispose?.();
+      particleObject.material?.dispose?.();
+    }
     weatherState.particles = null;
   }
+  weatherState.velocities = null;
   weatherState.active = false;
 }
 
@@ -4541,7 +4923,7 @@ const inventoryCraftHooks = {
       spikeTrapCount = Math.min(spikeTrapCount + 1, 8);
       messageEl.textContent = `Crafted spike trap! (${spikeTrapCount} — press G to place)`;
     } else if (recipeId === "ammo_pack") {
-      messageEl.textContent = "Ammo pack crafted — reserve topped up.";
+      messageEl.textContent = "Ammo pack crafted — all ammo reserves topped up.";
     }
     updateHUDMaterials();
   },
@@ -4697,10 +5079,14 @@ function spawnSparks(position, count = 8) {
 }
 
 function updateWaveDirector(dt) {
-  if (waveSpawnBudget <= 0 && zombies.length === 0 && zombieCorpses.length === 0 && nextWaveTimer <= 0) {
+  if (waveSpawnBudget <= 0 && zombies.length === 0 && nextWaveTimer <= 0) {
     nextWaveTimer = 5;
     topCenterAlertEl.textContent = `Wave ${wave} cleared!`;
     alertTimer = 2.5;
+    playSfx("skill_up", 0.5);
+    // Small HP bonus for surviving a wave
+    player.hp = Math.min(getPlayerMaxHealth(), player.hp + 10);
+    messageEl.textContent = `Wave ${wave} cleared! +10 HP`;
   }
 
   if (nextWaveTimer > 0) {
@@ -4725,6 +5111,8 @@ function updateWaveDirector(dt) {
       } else {
         topCenterAlertEl.textContent = `Wave ${wave} incoming`;
         alertTimer = 3;
+        addScreenShake(0.08);
+        playSfx("ui_click", 0.6);
       }
     }
   }
@@ -4789,6 +5177,7 @@ function preventTreeCollision() {
 // so we can remove entries when a chunk unloads or a vehicle explodes.
 const staticColliders = [];
 const PLAYER_RADIUS = 0.55;
+const ZOMBIE_RADIUS = 0.48;
 const VEHICLE_RADIUS = 1.6;
 
 function registerStaticCollider(obj, pad = 0, kind = "static") {
@@ -4855,10 +5244,28 @@ function resolveCircleVsStatics(px, pz, radius) {
   return { x: ox, z: oz };
 }
 
+function isCircleClearOfStatics(px, pz, radius) {
+  for (const c of staticColliders) {
+    const closestX = Math.max(c.minX, Math.min(px, c.maxX));
+    const closestZ = Math.max(c.minZ, Math.min(pz, c.maxZ));
+    const dx = px - closestX;
+    const dz = pz - closestZ;
+    if (dx * dx + dz * dz < radius * radius) return false;
+  }
+  return true;
+}
+
 function resolvePlayerObstacles() {
   const r = resolveCircleVsStatics(player.position.x, player.position.z, PLAYER_RADIUS);
   player.position.x = r.x;
   player.position.z = r.z;
+}
+
+function resolveZombieObstacles(zombie) {
+  const radius = zombie.type === "juggernaut" ? 0.78 : zombie.type === "crawler" ? 0.34 : ZOMBIE_RADIUS;
+  const r = resolveCircleVsStatics(zombie.mesh.position.x, zombie.mesh.position.z, radius);
+  zombie.mesh.position.x = r.x;
+  zombie.mesh.position.z = r.z;
 }
 
 function resolveVehicleObstacles(vehicle) {
@@ -4914,10 +5321,33 @@ function drawMinimap() {
     const rx = (relX / worldRadius) * (center - 12);
     const rz = (relZ / worldRadius) * (center - 12);
     if (Math.hypot(rx, rz) < center - 10) {
-      minimapCtx.fillStyle = "#6bc7ff";
+      minimapCtx.fillStyle = mate.downed ? "#ff4444" : "#6bc7ff";
       minimapCtx.beginPath();
-      minimapCtx.arc(rx, rz, 2.8, 0, Math.PI * 2);
+      minimapCtx.arc(rx, rz, mate.downed ? 3.5 : 2.8, 0, Math.PI * 2);
       minimapCtx.fill();
+      if (mate.downed) {
+        // Pulsing ring for downed teammates
+        minimapCtx.strokeStyle = `rgba(255,68,68,${0.4 + 0.4 * Math.sin(gameTime * 4)})`;
+        minimapCtx.lineWidth = 1.5;
+        minimapCtx.beginPath();
+        minimapCtx.arc(rx, rz, 5, 0, Math.PI * 2);
+        minimapCtx.stroke();
+      }
+    }
+  }
+
+  for (const vehicle of vehicles) {
+    const relX = vehicle.mesh.position.x - player.position.x;
+    const relZ = vehicle.mesh.position.z - player.position.z;
+    const rx = (relX / worldRadius) * (center - 12);
+    const rz = (relZ / worldRadius) * (center - 12);
+    if (Math.hypot(rx, rz) < center - 10) {
+      minimapCtx.save();
+      minimapCtx.translate(rx, rz);
+      minimapCtx.rotate(vehicle.yaw - player.yaw);
+      minimapCtx.fillStyle = vehicle.destroyed ? "rgba(120,120,120,0.7)" : vehicle === activeVehicle ? "#ffffff" : "#f0b35a";
+      minimapCtx.fillRect(-3.8, -2.2, 7.6, 4.4);
+      minimapCtx.restore();
     }
   }
 
@@ -4980,13 +5410,25 @@ function updateHud(dt) {
   staminaFillEl.style.width = `${player.stamina}%`;
   syncPlayerAmmoFields(player);
   const activeWpn = getActiveWeapon(player);
-  const ammoLabel = activeWpn.pellets ? `${player.ammo}/${player.reserveAmmo} shells` : `${player.ammo}/${player.reserveAmmo}`;
+  const ammoTypeLabel = activeWpn.ammoType || (activeWpn.pellets ? "Shells" : "Ammo");
+  const ammoLabel = `${player.ammo}/${player.reserveAmmo} ${ammoTypeLabel}`;
   const wpnNum = `[${player.activeWeapon + 1}]`;
   const wpnUpg = activeWpn.upgrades && Object.keys(activeWpn.upgrades).length > 0 ? " +" : "";
   statsMetaEl.textContent = `Map: ${activeMapConfig.name} | ${activeWpn.name}${wpnUpg} ${wpnNum} | ${ammoLabel} | Kills: ${player.kills} | Zombies: ${zombies.length} | Team: ${teammates.length + 1}`;
+  // Low ammo warning: flash when mag is nearly empty
+  const magPct = player.ammo / (activeWpn.magSize || 1);
+  lowAmmoWarning = magPct <= 0.25 && player.ammo > 0;
+  const emptyMag = player.ammo === 0 && player.reserveAmmo === 0;
+  if (lowAmmoWarning || emptyMag) {
+    const pulse = Math.sin(gameTime * 6) > 0;
+    statsMetaEl.style.color = pulse ? "#ff4444" : "";
+  } else {
+    statsMetaEl.style.color = "";
+  }
   if (extraMetaEl) {
     const throwStr = `🔥${molotovCount} 💥${grenadeCount} ⛏${landMineCount} 🗡${spikeTrapCount}`;
-    extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}`;
+    const downedInfo = teammates.filter(m => m.downed).map((m, i) => `⚠DOWN ${Math.ceil(m.downedTimer)}s`).join(" ");
+    extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}${downedInfo ? ` | ${downedInfo}` : ""}`;
   }
   if (skillMetaEl) {
     const activeSkills = Object.values(skills)
@@ -5007,7 +5449,14 @@ function updateHud(dt) {
   }
 
   player.damageFlash = Math.max(0, player.damageFlash - dt * 1.5);
-  damageFlashEl.style.opacity = `${player.damageFlash * 0.35}`;
+  // Low health vignette: persistent pulsing red when HP < 30%
+  const hpPct = player.hp / getPlayerMaxHealth();
+  if (hpPct < 0.3 && hpPct > 0 && !gameOver) {
+    const lowHpPulse = 0.08 + 0.06 * Math.sin(gameTime * 3);
+    damageFlashEl.style.opacity = `${Math.max(player.damageFlash * 0.35, lowHpPulse)}`;
+  } else {
+    damageFlashEl.style.opacity = `${player.damageFlash * 0.35}`;
+  }
   crosshairFireImpulse = Math.max(0, crosshairFireImpulse - dt * 2.6);
   if (crosshairEl) {
     const moveRatio = THREE.MathUtils.clamp(player.moveVelocity.length() / settings.sprintSpeed, 0, 1);
@@ -5062,6 +5511,11 @@ function updateHud(dt) {
     renderMissionListHUD();
     missionHudRefreshTimer = 0.25;
   }
+  objectiveCompassRefreshTimer -= dt;
+  if (objectiveCompassRefreshTimer <= 0) {
+    updateObjectiveCompass();
+    objectiveCompassRefreshTimer = 0.08;
+  }
 }
 
 // ─── Mission List HUD ───────────────────────────────────────────────────────
@@ -5083,6 +5537,93 @@ function renderMissionListHUD() {
   }
 }
 
+function getMissionTarget(mission) {
+  if (!mission) return null;
+  if (mission.type === MISSION_TYPES.DEFEND && mission.position) {
+    return { label: "Defend position", position: mission.position, urgency: 2 };
+  }
+  if (mission.type === MISSION_TYPES.RESCUE) {
+    if (mission.survivorFound) {
+      return { label: "Escort survivor home", position: { x: 0, y: 0, z: 0 }, urgency: 1.7 };
+    }
+    if (mission.position) return { label: "Find survivor", position: mission.position, urgency: 2.2 };
+  }
+  if (mission.type === MISSION_TYPES.SUPPLY_RUN) {
+    if (mission.reached && mission.returnPosition) {
+      return { label: "Return supplies", position: mission.returnPosition, urgency: 1.8 };
+    }
+    if (mission.position) return { label: "Reach supply point", position: mission.position, urgency: 1.6 };
+  }
+  return null;
+}
+
+function collectObjectiveCompassTargets() {
+  const targets = [];
+  for (const mate of teammates) {
+    if (!mate.downed) continue;
+    targets.push({
+      label: "Revive teammate",
+      position: mate.mesh.position,
+      urgency: 5,
+    });
+  }
+
+  if (eventDirector?.survivorActive && eventDirector.survivorPosition) {
+    targets.push({
+      label: "Defend survivor",
+      position: eventDirector.survivorPosition,
+      urgency: 4,
+    });
+  }
+
+  for (const drop of supplyDrops) {
+    if (drop.opened) continue;
+    targets.push({
+      label: drop.dropType === "weapon_crate" ? "Weapon crate" : drop.landed ? "Supply drop" : "Incoming supply drop",
+      position: drop.mesh.position,
+      urgency: drop.dropType === "weapon_crate" ? 3.4 : 2.8,
+    });
+  }
+
+  for (const mission of missionGenerator.activeMissions) {
+    const target = getMissionTarget(mission);
+    if (target) targets.push(target);
+  }
+  return targets;
+}
+
+function updateObjectiveCompass() {
+  if (!objectiveCompassEl || gameState !== "PLAYING" || gameOver) {
+    if (objectiveCompassEl) objectiveCompassEl.classList.remove("is-visible");
+    return;
+  }
+
+  let best = null;
+  let bestScore = -Infinity;
+  for (const target of collectObjectiveCompassTargets()) {
+    const dx = target.position.x - player.position.x;
+    const dz = target.position.z - player.position.z;
+    const distance = Math.hypot(dx, dz);
+    const score = target.urgency * 1000 - distance;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { ...target, dx, dz, distance };
+    }
+  }
+
+  if (!best) {
+    objectiveCompassEl.classList.remove("is-visible");
+    return;
+  }
+
+  const worldAngle = Math.atan2(best.dx, best.dz);
+  const relativeAngle = worldAngle - player.yaw;
+  objectiveCompassArrowEl.style.transform = `rotate(${relativeAngle}rad)`;
+  objectiveCompassLabelEl.textContent = best.label;
+  objectiveCompassDistanceEl.textContent = `${Math.round(best.distance)}m`;
+  objectiveCompassEl.classList.add("is-visible");
+}
+
 // ─── Weapon Slots HUD ─────────────────────────────────────────────────────
 function renderWeaponSlotsHUD() {
   if (!weaponSlotsEl) return;
@@ -5093,7 +5634,7 @@ function renderWeaponSlotsHUD() {
     const isActive = i === player.activeWeapon;
     const div = document.createElement("div");
     div.className = "weapon-slot" + (isActive ? " is-active" : "");
-    div.innerHTML = `<span class="weapon-slot-key">${slotMap[i] || i + 1}</span><span class="weapon-slot-name">${w.name}</span><span class="weapon-slot-ammo">${w.ammo}/${w.reserve}</span>`;
+    div.innerHTML = `<span class="weapon-slot-key">${slotMap[i] || i + 1}</span><span class="weapon-slot-name">${w.name}</span><span class="weapon-slot-ammo">${w.ammo}/${w.reserve} ${w.ammoType || ""}</span>`;
     weaponSlotsEl.appendChild(div);
   }
 }
@@ -5171,6 +5712,55 @@ function drawEnemyHealthBars() {
     hpBarCtx.strokeStyle = "rgba(255,255,255,0.25)";
     hpBarCtx.lineWidth = 0.5;
     hpBarCtx.strokeRect(bx - 0.5, by - 0.5, bBarW + 1, bBarH + 1);
+  }
+
+  // Teammate health bars
+  const tBarW = 36;
+  const tBarH = 4;
+  for (const mate of teammates) {
+    const dist = mate.mesh.position.distanceTo(player.position);
+    if (dist > 30) continue;
+    _hpProjVec.set(mate.mesh.position.x, mate.mesh.position.y + 2.6, mate.mesh.position.z);
+    _hpProjVec.project(camera);
+    if (_hpProjVec.z > 1) continue;
+    const sx = (_hpProjVec.x * 0.5 + 0.5) * w;
+    const sy = (-_hpProjVec.y * 0.5 + 0.5) * h;
+    if (sx < 0 || sx > w || sy < 0 || sy > h) continue;
+    const pct = Math.max(0, mate.hp / mate.maxHp);
+    const bx = sx - tBarW / 2;
+    const by = sy - tBarH - 2;
+    hpBarCtx.fillStyle = "rgba(0,0,0,0.5)";
+    hpBarCtx.fillRect(bx - 1, by - 1, tBarW + 2, tBarH + 2);
+    // Green for healthy, red for low
+    const tr = Math.round(255 * (1 - pct));
+    const tg = Math.round(220 * pct);
+    hpBarCtx.fillStyle = mate.downed ? "rgba(255,80,80,0.9)" : `rgb(${tr},${tg},60)`;
+    hpBarCtx.fillRect(bx, by, tBarW * pct, tBarH);
+    hpBarCtx.strokeStyle = "rgba(255,255,255,0.3)";
+    hpBarCtx.lineWidth = 0.5;
+    hpBarCtx.strokeRect(bx - 0.5, by - 0.5, tBarW + 1, tBarH + 1);
+    // Downed label and revive progress
+    if (mate.downed) {
+      hpBarCtx.fillStyle = "rgba(255,100,100,0.9)";
+      hpBarCtx.font = "bold 8px sans-serif";
+      hpBarCtx.textAlign = "center";
+      hpBarCtx.fillText("DOWN", sx, by - 2);
+      // Revive progress bar
+      if (mate.beingRevived) {
+        const revPct = Math.min(1, mate.reviveTimer / 3);
+        const revBarW = 30;
+        const revBarH = 3;
+        const rbx = sx - revBarW / 2;
+        const rby = by + tBarH + 3;
+        hpBarCtx.fillStyle = "rgba(0,0,0,0.5)";
+        hpBarCtx.fillRect(rbx - 1, rby - 1, revBarW + 2, revBarH + 2);
+        hpBarCtx.fillStyle = "rgba(68,255,136,0.9)";
+        hpBarCtx.fillRect(rbx, rby, revBarW * revPct, revBarH);
+        hpBarCtx.strokeStyle = "rgba(255,255,255,0.3)";
+        hpBarCtx.lineWidth = 0.5;
+        hpBarCtx.strokeRect(rbx - 0.5, rby - 0.5, revBarW + 1, revBarH + 1);
+      }
+    }
   }
 }
 
@@ -5377,6 +5967,7 @@ function createExplosion(position, radius, damage) {
       const falloff = 1 - pDist / radius;
       player.hp = Math.max(0, player.hp - damage * falloff * 0.4);
       player.damageFlash = 0.9;
+      lastDamageTime = gameTime;
       triggerHitStop(0.08);
       if (player.hp <= 0) killPlayer("Killed by explosion.");
     }
@@ -5509,6 +6100,7 @@ function updateMolotovFires(dt) {
       if (d < f.radius) {
         player.hp = Math.max(0, player.hp - f.damagePerSecond * dt * 0.55);
         player.damageFlash = 0.45;
+        lastDamageTime = gameTime;
         if (player.hp <= 0) killPlayer("Burned by fire...");
       }
     }
@@ -5541,7 +6133,7 @@ function placeLandMine() {
   updateHUDMaterials();
 }
 
-function updateLandMines() {
+function updateLandMines(_dt) {
   for (let mi = landMines.length - 1; mi >= 0; mi--) {
     const mine = landMines[mi];
     if (!mine.armed) continue;
@@ -5648,7 +6240,7 @@ function updateGrenades(dt) {
 }
 
 // ─── Arrow (Crossbow) ────────────────────────────────────────────────────────
-function spawnArrow(origin, direction, damage) {
+function spawnArrow(origin, direction, damage, weapon = {}) {
   const group = new THREE.Group();
   const shaft = new THREE.Mesh(
     new THREE.CylinderGeometry(0.012, 0.012, 0.55, 6),
@@ -5675,6 +6267,8 @@ function spawnArrow(origin, direction, damage) {
     mesh: group,
     velocity: vel.clone().multiplyScalar(88),
     damage,
+    bleedDamage: weapon.bleedDamage || 0,
+    retrieveChance: weapon.retrieveChance || 0,
     life: 1.8,
     stuck: false,
     stuckTimer: 0,
@@ -5720,8 +6314,13 @@ function updateArrows(dt) {
       const z = zombies[zi];
       if (a.mesh.position.distanceTo(z.mesh.position) < 0.9) {
         applyZombieDamage(zi, a.damage, false);
+        if (zombies[zi] === z) bleedZombie(z, 3.2, (a.bleedDamage || 0) / 3.2);
         triggerHitMarker(false);
-        messageEl.textContent = `Arrow hit! ${a.damage.toFixed(0)} dmg`;
+        if (Math.random() < (a.retrieveChance || 0)) {
+          const crossbow = player.weapons.find((w) => w.name === "Crossbow");
+          if (crossbow) crossbow.reserve = Math.min(getWeaponReserveCap(crossbow), crossbow.reserve + 1);
+        }
+        messageEl.textContent = `Bolt hit! ${a.damage.toFixed(0)} dmg${a.bleedDamage ? " + bleed" : ""}`;
         a.mesh.position.copy(z.mesh.position).add(_arrowStickOff);
         a.stuck = true;
         a.stuckTimer = 4;
@@ -5741,7 +6340,7 @@ function updateArrows(dt) {
 }
 
 // ─── Rocket ──────────────────────────────────────────────────────────────────
-function spawnRocket(origin, direction, damage) {
+function spawnRocket(origin, direction, damage, weapon = {}) {
   const group = new THREE.Group();
   const body = new THREE.Mesh(
     new THREE.CylinderGeometry(0.055, 0.04, 0.42, 10),
@@ -5771,8 +6370,9 @@ function spawnRocket(origin, direction, damage) {
   scene.add(group);
   rockets.push({
     mesh: group,
-    velocity: vel.clone().multiplyScalar(52),
+    velocity: vel.clone().multiplyScalar(weapon.rocketSpeed || 52),
     damage,
+    blastRadius: weapon.blastRadius || 11,
     life: 4.5,
   });
 }
@@ -5824,7 +6424,7 @@ function updateRockets(dt) {
       scene.remove(r.mesh);
       r.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
       rockets.splice(i, 1);
-      createExplosion(_rocketPos, 11, r.damage);
+      createExplosion(_rocketPos, r.blastRadius || 11, r.damage);
       addScreenShake(0.55);
       topCenterAlertEl.textContent = "💥 ROCKET IMPACT!";
       alertTimer = 1.5;
@@ -5833,7 +6433,7 @@ function updateRockets(dt) {
 }
 
 // ─── Flamethrower Puffs ──────────────────────────────────────────────────────
-function spawnFlamePuff(origin, direction) {
+function spawnFlamePuff(origin, direction, weapon = {}) {
   const spread = 0.18;
   const dir = direction.clone();
   dir.x += (Math.random() - 0.5) * spread;
@@ -5855,6 +6455,7 @@ function spawnFlamePuff(origin, direction) {
     life: 0.38 + Math.random() * 0.22,
     maxLife: 0.6,
     damage: 0,
+    burnDamage: weapon.burnDamage || 10,
     damageTickCd: 0,
   });
 }
@@ -5884,6 +6485,7 @@ function updateFlamePuffs(dt) {
       for (let zi = zombies.length - 1; zi >= 0; zi--) {
         if (f.mesh.position.distanceTo(zombies[zi].mesh.position) < 1.2) {
           applyZombieDamage(zi, _flameDamagePerSec * 0.1);
+          igniteZombie(zombies[zi], 2.8, f.burnDamage || 10);
         }
       }
     }
@@ -6121,6 +6723,25 @@ function deactivateDistraction(distraction) {
   if (idx >= 0) distractions.splice(idx, 1);
 }
 
+function triggerNoiseDistraction(position, duration = 4.5) {
+  const marker = new THREE.Object3D();
+  marker.position.copy(position);
+  scene.add(marker);
+  const distraction = {
+    mesh: marker,
+    velocity: null,
+    active: true,
+    beepTimer: 0,
+    position: position.clone(),
+  };
+  distractions.push(distraction);
+  const tid = setTimeout(() => {
+    pendingTimeouts.delete(tid);
+    deactivateDistraction(distraction);
+  }, duration * 1000);
+  pendingTimeouts.add(tid);
+}
+
 // ─── Supply Drop System ───────────────────────────────────────────────────
 function spawnSupplyDrop() {
   if (gameState !== "PLAYING" || gameOver) return;
@@ -6277,7 +6898,7 @@ function openSupplyDrop(drop) {
   if (drop.dropType === "weapon_crate") {
     // Weapon crate: random weapon ammo + upgrade materials
     const ammoType = Math.floor(Math.random() * player.weapons.length);
-    const ammoGain = Math.floor(getWeaponReserveCap(player.weapons[ammoType]) * 0.3);
+    const ammoGain = Math.floor(getWeaponReserveCap(player.weapons[ammoType]) * 0.38);
     player.weapons[ammoType].reserve = Math.min(
       player.weapons[ammoType].reserve + ammoGain,
       getWeaponReserveCap(player.weapons[ammoType]),
@@ -6289,26 +6910,34 @@ function openSupplyDrop(drop) {
     grenadeCount = Math.min(grenadeCount + 1, 6);
     topCenterAlertEl.textContent = "📦 WEAPON CRATE OPENED!";
     alertTimer = 2.5;
-    messageEl.textContent = `Got ${ammoGain} ${player.weapons[ammoType].name} ammo, +scrap/metal/chem, +1 grenade!`;
+    messageEl.textContent = `Got ${ammoGain} ${player.weapons[ammoType].ammoType || player.weapons[ammoType].name} ammo, +scrap/metal/chem, +1 grenade!`;
     return;
   }
 
   // Give rewards
-  const ammoType = Math.random() < 0.5 ? 0 : Math.random() < 0.7 ? 1 : 2;
-  const ammoCounts = [60, 40, 18];
-  const ammoNames = ["Rifle", "Pistol", "Shotgun"];
-
-  player.weapons[ammoType].reserve = Math.min(
-    player.weapons[ammoType].reserve + ammoCounts[ammoType],
-    getWeaponReserveCap(player.weapons[ammoType]),
-  );
+  const ammoRewards = [
+    [0, 90],
+    [1, 60],
+    [2, 24],
+    [3, 8],
+    [4, 120],
+    [5, 10],
+    [6, 1],
+  ];
+  const claimed = [];
+  for (let i = 0; i < 3; i += 1) {
+    const [ammoType, ammoCount] = ammoRewards[Math.floor(Math.random() * ammoRewards.length)];
+    const weapon = player.weapons[ammoType];
+    weapon.reserve = Math.min(weapon.reserve + ammoCount, getWeaponReserveCap(weapon));
+    claimed.push(`${ammoCount} ${weapon.ammoType || weapon.name}`);
+  }
   grenadeCount = Math.min(grenadeCount + 2, 6);
   noiseMakerCount = Math.min(noiseMakerCount + 1, 5);
   player.hp = Math.min(player.hp + 30, getPlayerMaxHealth());
 
   topCenterAlertEl.textContent = "★ SUPPLY DROP OPENED!";
   alertTimer = 2.5;
-  messageEl.textContent = `Got ${ammoCounts[ammoType]} ${ammoNames[ammoType]} ammo, +2 grenades, +1 noise maker, +30 HP!`;
+  messageEl.textContent = `Got ${claimed.join(", ")}, +2 grenades, +1 noise maker, +30 HP!`;
 }
 
 // ─── Skill/Perk System ────────────────────────────────────────────────────
@@ -6470,6 +7099,11 @@ function animate(nowMs) {
       }
     }
 
+    // Out-of-combat health regeneration: slow heal after 5 seconds without damage
+    if (gameTime - lastDamageTime > 5 && player.hp < getPlayerMaxHealth() && player.hp > 0) {
+      player.hp = Math.min(getPlayerMaxHealth(), player.hp + 2 * dt);
+    }
+
     if (player.reloadTimer > 0) {
       player.reloadTimer -= dt;
       if (player.reloadTimer <= 0) {
@@ -6492,16 +7126,30 @@ function animate(nowMs) {
     }
     if (activeVehicle) {
       updateVehicles(dt);
-      resolveVehicleObstacles(activeVehicle);
-      sun.position.x = activeVehicle.mesh.position.x + 30;
-      sun.position.z = activeVehicle.mesh.position.z - 10;
+      if (activeVehicle) {
+        resolveVehicleObstacles(activeVehicle);
+        syncPlayerToVehicle(activeVehicle);
+        const camOffset = _tempVec1.set(0, 3.5, 5.5);
+        camOffset.applyAxisAngle(_worldAxisY, activeVehicle.yaw);
+        const targetPos = _tempVec2.copy(activeVehicle.mesh.position).add(_tempVec3.set(0, 1, 0));
+        camera.position.lerp(_tempVec4.copy(activeVehicle.mesh.position).add(camOffset), 0.15);
+        camera.lookAt(targetPos);
+        sun.position.x = activeVehicle.mesh.position.x + 30;
+        sun.position.z = activeVehicle.mesh.position.z - 10;
+      } else {
+        sun.position.x = player.position.x + 30;
+        sun.position.z = player.position.z - 10;
+      }
     } else {
       movePlayer(dt);
       sun.position.x = player.position.x + 30;
       sun.position.z = player.position.z - 10;
       preventTreeCollision();
       resolvePlayerObstacles();
+      clampPlayerToTerrainFloor();
+      updateVehicles(dt);
     }
+    preventUnexpectedSpawnTeleport();
     const streamChunkX = Math.floor(player.position.x / chunkSize);
     const streamChunkZ = Math.floor(player.position.z / chunkSize);
     if (streamChunkX !== lastStreamChunkX || streamChunkZ !== lastStreamChunkZ) {
@@ -6509,6 +7157,7 @@ function animate(nowMs) {
       lastStreamChunkX = streamChunkX;
       lastStreamChunkZ = streamChunkZ;
     }
+    updateLastSafePlayerPosition();
     updateZombies(dt);
     // If a zombie killed the player this frame, skip all further combat updates.
     if (!gameOver) {
@@ -6605,10 +7254,36 @@ window.addEventListener("mousemove", (e) => {
   lookSwayY += e.movementY;
 });
 
+function handleReloadKeyCapture(e) {
+  if (gameState !== "PLAYING" || e.code !== "KeyR") return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (!audioSystem.unlocked) void ensureAudioUnlocked();
+  if (!gameOver && !e.repeat && !inventoryOpen && !upgradeBenchOpen && !activeVehicle) reload();
+}
+
+window.addEventListener("keydown", handleReloadKeyCapture, true);
+
 window.addEventListener("keydown", (e) => {
   if (!audioSystem.unlocked) {
     // First keyboard input should unlock audio context on browsers that gate autoplay.
     void ensureAudioUnlocked();
+  }
+  if (gameState === "PLAYING") {
+    const gameplayKeys = new Set([
+      "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
+      "KeyQ", "KeyE", "KeyF", "KeyG", "KeyH", "KeyJ", "KeyK", "KeyL",
+      "KeyM", "KeyN", "KeyP", "KeyT", "KeyU", "KeyV", "KeyB", "KeyC",
+      "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7",
+      "Tab",
+    ]);
+    if (gameplayKeys.has(e.code)) e.preventDefault();
+  }
+  if (gameState === "PLAYING" && e.code === "KeyR") {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!gameOver && !e.repeat && !inventoryOpen && !upgradeBenchOpen && !activeVehicle) reload();
+    return;
   }
   keys.add(e.code);
   if (activeVehicle) {
@@ -6616,9 +7291,8 @@ window.addEventListener("keydown", (e) => {
     if (e.code === "KeyS") vehicleInput.backward = true;
     if (e.code === "KeyA") vehicleInput.left = true;
     if (e.code === "KeyD") vehicleInput.right = true;
-    if (e.code === "Space") vehicleInput.backward = true; // Brake
+    if (e.code === "Space") vehicleInput.brake = true;
   }
-  if (e.code === "KeyR" && gameState === "PLAYING") reload();
   if (e.code === "KeyQ" && gameState === "PLAYING") doSwapPlayerWeapon();
   if (e.code === "KeyU" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     e.preventDefault();
@@ -6655,6 +7329,12 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyF" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     if (activeVehicle) exitVehicle();
     else {
+      const downedMate = findNearestDownedTeammate();
+      if (downedMate) {
+        downedMate.beingRevived = true;
+        messageEl.textContent = "Hold F to revive teammate...";
+        return;
+      }
       const nearVehicle = findNearestVehicle();
       if (nearVehicle) enterVehicle(nearVehicle);
       else performMelee();
@@ -6662,6 +7342,7 @@ window.addEventListener("keydown", (e) => {
   }
   if (e.code === "KeyH" && gameState === "PLAYING" && !gameOver && !e.repeat && activeVehicle) {
     playSpatialSfx("noise_maker", activeVehicle.mesh.position, 0.6);
+    triggerNoiseDistraction(activeVehicle.mesh.position, 5.5);
     messageEl.textContent = "HONK!";
   }
   if (e.code === "KeyB" && gameState === "PLAYING" && !gameOver && !e.repeat) buildBarricade();
@@ -6701,16 +7382,20 @@ window.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("keyup", (e) => {
+  if (gameState === "PLAYING" && (e.code === "Space" || e.code === "Enter")) e.preventDefault();
   keys.delete(e.code);
   if (activeVehicle) {
     if (e.code === "KeyW") vehicleInput.forward = false;
     if (e.code === "KeyS") vehicleInput.backward = false;
     if (e.code === "KeyA") vehicleInput.left = false;
     if (e.code === "KeyD") vehicleInput.right = false;
-    if (e.code === "Space") vehicleInput.backward = false;
+    if (e.code === "Space") vehicleInput.brake = false;
   }
 });
 window.addEventListener("blur", clearInputState);
+window.addEventListener("beforeunload", () => {
+  if (gameState === "PLAYING" && !gameOver) saveRun();
+});
 
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -6755,10 +7440,7 @@ window.addEventListener("resize", () => {
   for (let i = 0; i < 3; i += 1) {
     teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplate, remingtonTemplate, pistolTemplate));
   }
-  // Spawn vehicles on Outbreak City and Ruins maps
-  if (activeMapConfig.id === "outbreak_city" || activeMapConfig.id === "ruins") {
-    spawnVehiclesForMap();
-  }
+  spawnVehiclesForMap();
   syncPlayerAmmoFields(player);
   updateAudioButtonLabel();
   setMenuMode("title");
@@ -6767,6 +7449,7 @@ window.addEventListener("resize", () => {
 })();
 
 startBtnEl.addEventListener("click", async () => {
+  if (gameState !== "MENU_TITLE") return;
   playSfx("ui_click", 1);
   await ensureAudioUnlocked();
   if (mapDirty) {
@@ -6778,18 +7461,21 @@ startBtnEl.addEventListener("click", async () => {
 });
 
 resumeBtnEl.addEventListener("click", async () => {
+  if (gameState !== "MENU_PAUSE" || gameOver) return;
   playSfx("ui_click", 1);
   await ensureAudioUnlocked();
   if (!gameOver) canvas.requestPointerLock();
 });
 
 restartBtnEl.addEventListener("click", () => {
+  if (gameState === "PLAYING") return;
   playSfx("ui_click", 1);
   clearSavedRun();
   window.location.reload();
 });
 
 continueBtnEl.addEventListener("click", async () => {
+  if (gameState !== "MENU_TITLE") return;
   playSfx("ui_click", 1);
   await ensureAudioUnlocked();
 
