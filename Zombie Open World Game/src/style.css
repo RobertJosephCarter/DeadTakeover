@@ -475,6 +475,34 @@ body,
   transition: opacity 0.06s linear;
 }
 
+/* ─── Damage Direction Indicator ──────────────────────────────────── */
+#damage-direction {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 120px;
+  height: 120px;
+  margin-left: -60px;
+  margin-top: -60px;
+  pointer-events: none;
+  z-index: 12;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+#damage-direction::after {
+  content: "";
+  position: absolute;
+  top: -48px;
+  left: 50%;
+  margin-left: -10px;
+  width: 0;
+  height: 0;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-bottom: 22px solid rgba(220, 30, 30, 0.75);
+  filter: blur(1px);
+}
+
 /* ─── Kill Streak Display ─────────────────────────────────────────── */
 #kill-streak-display {
   position: fixed;

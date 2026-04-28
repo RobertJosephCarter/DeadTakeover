@@ -15,6 +15,9 @@ export function getWeaponReserveCap(weapon) {
     Flamethrower: 720,
     Sniper: 70,
     Rocket: 12,
+    SMG: 400,
+    Revolver: 90,
+    Minigun: 800,
   };
   return baseCaps[weapon.name] || weapon.magSize * 10;
 }
@@ -62,19 +65,28 @@ export function applyWeaponUpgrade(weapon, upgradeId) {
   const current = weapon.upgrades[upgradeId] || 0;
   if (current >= def.maxTier) return false;
 
+  // Store base stats on first upgrade so multipliers are always relative to the original value
+  if (!weapon._baseStats) {
+    weapon._baseStats = {
+      magSize: weapon.magSize,
+      damage: weapon.damage,
+      fireDelay: weapon.fireDelay,
+    };
+  }
+
   const newTier = current + 1;
   weapon.upgrades[upgradeId] = newTier;
 
   const multiplier = 1 + def.valuePerTier * newTier;
   switch (def.effect) {
     case "magSize":
-      weapon.magSize = Math.round(weapon.magSize * multiplier);
+      weapon.magSize = Math.round(weapon._baseStats.magSize * multiplier);
       break;
     case "damage":
-      weapon.damage = Math.round(weapon.damage * multiplier);
+      weapon.damage = Math.round(weapon._baseStats.damage * multiplier);
       break;
     case "fireDelay":
-      weapon.fireDelay = Math.max(0.02, weapon.fireDelay * multiplier);
+      weapon.fireDelay = Math.max(0.02, weapon._baseStats.fireDelay * multiplier);
       break;
     case "laser":
       weapon.laser = true;
@@ -204,6 +216,94 @@ export function createSniperMesh(material, gripMaterial) {
   return group;
 }
 
+/** Procedural SMG 3D mesh for first-person view — short barrel, big mag. */
+export function createSmgMesh(material, gripMaterial) {
+  const group = new THREE.Group();
+  const metal = material;
+  const grip = gripMaterial;
+
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.32), metal);
+  receiver.position.set(0, 0, 0);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.32, 8), metal);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.01, -0.32);
+  // Tall vertical mag in front of the trigger
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.24, 0.06), grip);
+  mag.position.set(0, -0.16, -0.04);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.18), metal);
+  stock.position.set(0, 0.02, 0.22);
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.07), grip);
+  handle.position.set(0, -0.12, 0.08);
+  handle.rotation.z = 0.1;
+  const sight = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.04, 0.04), metal);
+  sight.position.set(0, 0.09, -0.05);
+
+  group.add(receiver, barrel, mag, stock, handle, sight);
+  return group;
+}
+
+/** Procedural Revolver 3D mesh for first-person view — chunky cylinder + long barrel. */
+export function createRevolverMesh(material, gripMaterial) {
+  const group = new THREE.Group();
+  const metal = material;
+  const grip = gripMaterial;
+
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.16), metal);
+  frame.position.set(0, 0, 0);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.26, 8), metal);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.01, -0.18);
+  const cylinder = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.07, 12), metal);
+  cylinder.rotation.x = Math.PI / 2;
+  cylinder.position.set(0, 0, 0.0);
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.18, 0.07), grip);
+  handle.position.set(0, -0.13, 0.06);
+  handle.rotation.z = 0.18;
+  const hammer = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.04, 0.03), metal);
+  hammer.position.set(0, 0.05, 0.05);
+  const trigger = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.04, 0.018), metal);
+  trigger.position.set(0, -0.06, 0.05);
+  const guard = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.005, 6, 12, Math.PI), metal);
+  guard.rotation.x = Math.PI / 2;
+  guard.position.set(0, -0.06, 0.05);
+
+  group.add(frame, barrel, cylinder, handle, hammer, trigger, guard);
+  return group;
+}
+
+/** Procedural Minigun 3D mesh for first-person view — multi-barrel cluster. */
+export function createMinigunMesh(material, gripMaterial) {
+  const group = new THREE.Group();
+  const metal = material;
+  const grip = gripMaterial;
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.3), metal);
+  body.position.set(0, 0, 0.05);
+  // 6 barrels around a central axis
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const b = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.55, 6), metal);
+    b.rotation.x = Math.PI / 2;
+    b.position.set(Math.cos(a) * 0.045, Math.sin(a) * 0.045 + 0.005, -0.32);
+    group.add(b);
+  }
+  // Barrel hub cap
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 12), metal);
+  hub.rotation.x = Math.PI / 2;
+  hub.position.set(0, 0.005, -0.62);
+  // Belt feed box on the side
+  const ammoBox = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.18), grip);
+  ammoBox.position.set(0.18, -0.04, 0.08);
+  // Front grip + rear handle
+  const fg = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.13, 0.06), grip);
+  fg.position.set(0, -0.16, -0.05);
+  const rh = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.07), grip);
+  rh.position.set(0, -0.13, 0.18);
+
+  group.add(body, hub, ammoBox, fg, rh);
+  return group;
+}
+
 /** Procedural Rocket Launcher 3D mesh for first-person view. */
 export function createRocketLauncherMesh(material, gripMaterial) {
   const group = new THREE.Group();
@@ -257,6 +357,24 @@ export function createWorldWeaponMesh(type, scale = 1) {
     }
     case "Rocket": {
       const m = createRocketLauncherMesh(metal, grip);
+      m.scale.setScalar(0.85);
+      gun.add(m);
+      break;
+    }
+    case "SMG": {
+      const m = createSmgMesh(metal, grip);
+      m.scale.setScalar(0.95);
+      gun.add(m);
+      break;
+    }
+    case "Revolver": {
+      const m = createRevolverMesh(metal, grip);
+      m.scale.setScalar(1.0);
+      gun.add(m);
+      break;
+    }
+    case "Minigun": {
+      const m = createMinigunMesh(metal, grip);
       m.scale.setScalar(0.85);
       gun.add(m);
       break;

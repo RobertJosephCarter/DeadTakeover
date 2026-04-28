@@ -6,6 +6,7 @@ const RECIPES = [
   { id: "molotov", name: "Molotov", icon: "🔥", cost: { cloth: 1, chemicals: 1 }, description: "Throwable fire bottle (G to throw)" },
   { id: "land_mine", name: "Land Mine", icon: "💣", cost: { scrap: 2, metal: 1 }, description: "Placed trap, 5m trigger radius" },
   { id: "spike_trap", name: "Spike Trap", icon: "🗡️", cost: { wood: 3, scrap: 1 }, description: "Damages zombies that walk over it" },
+  { id: "turret", name: "Auto-Turret", icon: "🔫", cost: { metal: 4, scrap: 3, chemicals: 2 }, description: "Automated sentry, fires at nearby zombies" },
 ];
 
 export function createInventoryOverlay() {

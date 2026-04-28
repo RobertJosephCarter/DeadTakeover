@@ -2,18 +2,26 @@
  *  Triggers random events to break up wave rhythm and add variety.
  */
 
+import * as THREE from "three";
+
 export const EVENT_TYPES = {
   HORDE_RUSH: "horde_rush",
   STRANDED_SURVIVOR: "stranded_survivor",
   TOXIC_ZONE: "toxic_zone",
   AIRDROP_WEAPON: "airdrop_weapon",
+  ZOMBIE_TIDE: "zombie_tide",
+  ABANDONED_CAMP: "abandoned_camp",
+  EMERGENCY_BROADCAST: "emergency_broadcast",
 };
 
 export const EVENT_WEIGHTS = {
-  [EVENT_TYPES.HORDE_RUSH]: 0.35,
-  [EVENT_TYPES.STRANDED_SURVIVOR]: 0.25,
-  [EVENT_TYPES.TOXIC_ZONE]: 0.20,
-  [EVENT_TYPES.AIRDROP_WEAPON]: 0.20,
+  [EVENT_TYPES.HORDE_RUSH]: 0.22,
+  [EVENT_TYPES.STRANDED_SURVIVOR]: 0.18,
+  [EVENT_TYPES.TOXIC_ZONE]: 0.13,
+  [EVENT_TYPES.AIRDROP_WEAPON]: 0.13,
+  [EVENT_TYPES.ZOMBIE_TIDE]: 0.14,
+  [EVENT_TYPES.ABANDONED_CAMP]: 0.10,
+  [EVENT_TYPES.EMERGENCY_BROADCAST]: 0.10,
 };
 
 export function pickEventType() {
@@ -38,6 +46,19 @@ export function createEventDirector() {
     survivorHP: 0,
     survivorMesh: null,
     toxicZones: [],
+    // Zombie tide — sustained directional spawn stream.
+    tideActive: false,
+    tideTimer: 0,
+    tideAngle: 0,
+    tideSpawnAccumulator: 0,
+    // Emergency broadcast — temporary buff to supply drop frequency.
+    broadcastActive: false,
+    broadcastTimer: 0,
+    // Abandoned camp — passive loot stash. Cleaned up when looted or expired.
+    campActive: false,
+    campMarker: null,
+    campPosition: null,
+    campTimer: 0,
   };
 }
 
@@ -87,6 +108,39 @@ export function updateEventDirector(director, dt, player, zombies, scene, terrai
     }
   }
 
+  // Sustained zombie tide — spawns runners on a fixed bearing for 20s.
+  if (director.tideActive) {
+    director.tideTimer -= dt;
+    director.tideSpawnAccumulator += dt;
+    // ~3 zombies per second
+    if (director.tideSpawnAccumulator >= 0.33) {
+      director.tideSpawnAccumulator = 0;
+      result = result || { type: "tide_spawn", angle: director.tideAngle };
+    }
+    if (director.tideTimer <= 0) {
+      director.tideActive = false;
+      result = { type: "tide_end" };
+    }
+  }
+
+  // Emergency broadcast — caller drives drop frequency, we just count down.
+  if (director.broadcastActive) {
+    director.broadcastTimer -= dt;
+    if (director.broadcastTimer <= 0) {
+      director.broadcastActive = false;
+      result = result || { type: "broadcast_end" };
+    }
+  }
+
+  // Abandoned camp — auto-expire after 4 minutes if untouched.
+  if (director.campActive) {
+    director.campTimer -= dt;
+    if (director.campTimer <= 0) {
+      result = result || { type: "camp_expired" };
+      clearCamp(director, scene);
+    }
+  }
+
   // Trigger new event
   if (director.timer >= director.nextEventIn && !director.activeEvent && !director.survivorActive) {
     director.timer = 0;
@@ -97,6 +151,23 @@ export function updateEventDirector(director, dt, player, zombies, scene, terrai
   }
 
   return result;
+}
+
+/** Remove the abandoned camp marker. Called when looted or on expiry. */
+export function clearCamp(director, scene) {
+  director.campActive = false;
+  if (director.campMarker) {
+    scene.remove(director.campMarker);
+    director.campMarker.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry?.dispose?.();
+        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose?.());
+        else obj.material?.dispose?.();
+      }
+    });
+    director.campMarker = null;
+  }
+  director.campPosition = null;
 }
 
 export function executeEvent(eventType, director, player, scene, terrainHeight, addZombieFn, spawnDropFn) {
@@ -158,10 +229,94 @@ export function executeEvent(eventType, director, player, scene, terrainHeight, 
       director.activeEvent = null;
       return { alert: "📦 WEAPON CRATE dropping!", alertTimer: 3 };
     }
+    case EVENT_TYPES.ZOMBIE_TIDE: {
+      // Pick a compass bearing the player will see zombies streaming in from.
+      director.tideAngle = Math.random() * Math.PI * 2;
+      director.tideTimer = 20;            // 20 seconds of sustained spawning
+      director.tideSpawnAccumulator = 0;
+      director.tideActive = true;
+      const compass = bearingLabel(director.tideAngle);
+      director.activeEvent = null;
+      return { alert: `🌊 ZOMBIE TIDE from the ${compass}!`, alertTimer: 4 };
+    }
+    case EVENT_TYPES.ABANDONED_CAMP: {
+      // Place a small camp marker somewhere in the world. The caller is
+      // expected to spawn loot pickups around campPosition.
+      const cAngle = Math.random() * Math.PI * 2;
+      const cDist = 50 + Math.random() * 60;
+      const cx = player.position.x + Math.cos(cAngle) * cDist;
+      const cz = player.position.z + Math.sin(cAngle) * cDist;
+      const cy = terrainHeight(cx, cz);
+      director.campPosition = { x: cx, y: cy, z: cz };
+      director.campMarker = createCampMesh(director.campPosition);
+      director.campActive = true;
+      director.campTimer = 240; // 4 minute lifetime if undiscovered
+      scene.add(director.campMarker);
+      director.activeEvent = null;
+      return { alert: "🏕 ABANDONED CAMP spotted on the minimap.", alertTimer: 4, campPosition: director.campPosition };
+    }
+    case EVENT_TYPES.EMERGENCY_BROADCAST: {
+      // 60-second window of boosted supply drop frequency. Caller reads
+      // director.broadcastActive each tick to multiply its drop chance.
+      director.broadcastActive = true;
+      director.broadcastTimer = 60;
+      director.activeEvent = null;
+      return { alert: "📡 EMERGENCY BROADCAST — supply drops incoming!", alertTimer: 4 };
+    }
     default:
       director.activeEvent = null;
       return null;
   }
+}
+
+/** Cardinal direction label for a yaw angle in radians (0 = +X). */
+function bearingLabel(angle) {
+  const norm = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  const slice = Math.round(norm / (Math.PI / 4)) % 8;
+  return ["E", "NE", "N", "NW", "W", "SW", "S", "SE"][slice];
+}
+
+/** Spawn a small abandoned camp marker — campfire stones + a tarp shape so the
+ *  player sees something to investigate from a distance. Loot itself is the
+ *  caller's responsibility (it has access to material drop helpers). */
+function createCampMesh(position) {
+  const group = new THREE.Group();
+  // Fire pit ring
+  const stoneMat = new THREE.MeshStandardMaterial({ color: 0x4a4640, roughness: 0.95 });
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const stone = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.18, 0.32), stoneMat);
+    stone.position.set(Math.cos(a) * 0.55, 0.09, Math.sin(a) * 0.55);
+    stone.rotation.y = Math.random() * Math.PI;
+    group.add(stone);
+  }
+  // Charred logs
+  const logMat = new THREE.MeshStandardMaterial({ color: 0x1a1410, roughness: 0.95 });
+  const log1 = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.12, 0.12), logMat);
+  log1.position.y = 0.06;
+  const log2 = log1.clone();
+  log2.rotation.y = Math.PI / 3;
+  group.add(log1, log2);
+
+  // Tarp / lean-to: a tilted plane to suggest shelter
+  const tarpMat = new THREE.MeshStandardMaterial({ color: 0x5c4628, roughness: 0.85, side: THREE.DoubleSide });
+  const tarp = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.6), tarpMat);
+  tarp.position.set(1.4, 0.85, 0);
+  tarp.rotation.set(-Math.PI / 2.4, 0, Math.PI / 8);
+  group.add(tarp);
+
+  // Locator beacon — lifted plane the player can spot from range
+  const beaconMat = new THREE.MeshBasicMaterial({ color: 0xffaa33, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
+  const beacon = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.55), beaconMat);
+  beacon.position.y = 3.2;
+  beacon.userData.isIcon = true;
+  group.add(beacon);
+
+  group.position.set(position.x, position.y, position.z);
+  group.traverse((obj) => {
+    if (obj instanceof THREE.Mesh && !obj.userData.isIcon) obj.castShadow = true;
+  });
+  return group;
 }
 
 function createSurvivorMesh(position) {

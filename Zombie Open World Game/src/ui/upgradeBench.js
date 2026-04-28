@@ -9,34 +9,9 @@ const UPGRADE_ICONS = {
   fireRate: "⚡",
 };
 
-export function createUpgradeBenchOverlay() {
-  const el = document.createElement("div");
-  el.id = "upgrade-bench";
-  el.className = "upgrade-bench-overlay is-hidden";
-  el.innerHTML = `
-    <div class="upgrade-bench-card">
-      <h2>Weapon Upgrade Bench</h2>
-      <p class="upgrade-bench-subtitle">Select a weapon to upgrade using scavenged materials.</p>
-      <div id="upgrade-weapon-list" class="upgrade-weapon-list"></div>
-      <div id="upgrade-details" class="upgrade-details is-hidden">
-        <div class="upgrade-weapon-name" id="upgrade-weapon-name"></div>
-        <div class="upgrade-grid" id="upgrade-grid"></div>
-      </div>
-      <div class="upgrade-bench-actions">
-        <button id="upgrade-bench-close">Close</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(el);
-  return {
-    overlay: el,
-    weaponList: el.querySelector("#upgrade-weapon-list"),
-    details: el.querySelector("#upgrade-details"),
-    weaponName: el.querySelector("#upgrade-weapon-name"),
-    grid: el.querySelector("#upgrade-grid"),
-    closeBtn: el.querySelector("#upgrade-bench-close"),
-  };
-}
+// Note: the overlay markup lives statically in index.html (#upgrade-bench).
+// main.js queries those nodes directly and passes the resulting handle into
+// showUpgradeBench / hideUpgradeBench. There is no dynamic-create variant.
 
 export function showUpgradeBench(bench, player, materials, skills, onApply) {
   bench.overlay.classList.remove("is-hidden");

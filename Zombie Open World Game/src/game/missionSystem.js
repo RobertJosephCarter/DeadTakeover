@@ -4,6 +4,10 @@ import * as THREE from "three";
  *  Generates and tracks active missions with objectives and rewards.
  */
 
+// Reusable scratch vectors (avoid per-frame allocation)
+const _missionPos = new THREE.Vector3();
+const _returnPos = new THREE.Vector3();
+
 export const MISSION_TYPES = {
   SCAVENGE: "scavenge",
   DEFEND: "defend",
@@ -128,8 +132,8 @@ export function generateMission(id, playerPosition, terrainHeight, worldSize = 2
 }
 
 export function updateMissions(generator, dt, player, materials, zombies, terrainHeight) {
-  const missionPos = new THREE.Vector3();
-  const returnPos = new THREE.Vector3();
+  const missionPos = _missionPos;
+  const returnPos = _returnPos;
   generator.timer += dt;
 
   // Generate new mission if slot available (max 3 active)

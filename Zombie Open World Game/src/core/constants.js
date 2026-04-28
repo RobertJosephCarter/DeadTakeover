@@ -21,6 +21,12 @@ export const WEAPON_DEFINITIONS = [
   { name: "Flamethrower", ammoType: "Fuel", ammo: 120, reserve: 480, magSize: 120, damage: 5, fireDelay: 0.038, recoil: 0.15, range: 22, reloadTime: 2.6, continuous: true, burnDamage: 12, unlocked: true },
   { name: "Sniper", ammoType: ".308 Match", ammo: 5, reserve: 35, magSize: 5, damage: 125, fireDelay: 1.25, recoil: 2.9, range: 280, reloadTime: 2.45, bulletSpeed: 150, scope: true, adsRequired: true, pierce: 2, armorBreak: true, unlocked: true },
   { name: "Rocket", ammoType: "Rockets", ammo: 1, reserve: 7, magSize: 1, damage: 185, fireDelay: 1.7, recoil: 4.2, range: 135, reloadTime: 2.9, explosive: true, selfDamage: true, blastRadius: 12.5, rocketSpeed: 58, unlocked: true },
+  // High-RPM short-range. Big mag, low per-shot damage. The brawler's choice.
+  { name: "SMG", ammoType: "9mm Para", ammo: 40, reserve: 280, magSize: 40, damage: 14, fireDelay: 0.075, recoil: 0.55, range: 70, reloadTime: 1.6, bulletSpeed: 88, pierce: 1, unlocked: false },
+  // Slow heavy revolver — big damage per shot, high crit, tiny mag.
+  { name: "Revolver", ammoType: ".44 Mag", ammo: 6, reserve: 60, magSize: 6, damage: 65, fireDelay: 0.5, recoil: 1.6, range: 110, reloadTime: 1.8, bulletSpeed: 92, critChance: 0.32, critMultiplier: 2.1, pierce: 2, unlocked: false },
+  // Minigun — sustained fire, no spool-up. Heavy on ammo, light on damage per pellet.
+  { name: "Minigun", ammoType: "7.62 Belt", ammo: 200, reserve: 600, magSize: 200, damage: 11, fireDelay: 0.045, recoil: 0.4, range: 90, reloadTime: 4.0, bulletSpeed: 92, pierce: 1, unlocked: false },
 ];
 
 export const WEAPON_UPGRADES = {

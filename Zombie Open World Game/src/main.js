@@ -18,14 +18,40 @@ import {
   createFlamethrowerMesh,
   createSniperMesh,
   createRocketLauncherMesh,
+  createSmgMesh,
+  createRevolverMesh,
+  createMinigunMesh,
   createWorldWeaponMesh,
   initDefaultWeapons,
 } from "./combat/weaponSystem.js";
 import { showUpgradeBench, hideUpgradeBench } from "./ui/upgradeBench.js";
 import { createInventoryOverlay, showInventory, hideInventory } from "./ui/inventory.js";
-import { createEventDirector, updateEventDirector, executeEvent, isSurvivorAlive, damageSurvivor, EVENT_TYPES } from "./game/events.js";
+import { createEventDirector, updateEventDirector, executeEvent, isSurvivorAlive, damageSurvivor, clearCamp, EVENT_TYPES } from "./game/events.js";
+import { WORLD_MAPS, mapById } from "./core/config.js";
+import { createWeather, initWeather as initWeatherSystem, updateWeather as updateWeatherSystem, clearWeather as clearWeatherSystem } from "./world/weather.js";
+import { noise2D as terrainNoise2D, terrainHeight as terrainHeightFn, terrainNormal as terrainNormalFn } from "./world/terrain.js";
+import { spawnModel, preloadModels } from "./world/spawnModel.js";
+import { modelsByCategory, getModelDef } from "./world/modelRegistry.js";
+import { buildZombieMesh, statsForType as zombieStatsForType, rollZombieType, SPECIAL_INFECTED_TYPES } from "./entities/zombie.js";
+import { emitSoundEvent, pruneSoundEvents, flankOffset, NOISE_RADIUS } from "./entities/zombieAI.js";
+import { resolveBossFlavor } from "./entities/bosses.js";
+import { createAudioState, persistMutedFlag } from "./audio/state.js";
+import {
+  ensureAudioUnlocked as ensureAudioUnlockedEngine,
+  playNoise as playNoiseEngine,
+  playTone as playToneEngine,
+  playSpatialSfx as playSpatialSfxEngine,
+  playSfx as playSfxEngine,
+  applyBgmVolume as applyBgmVolumeEngine,
+  stopHtmlBgmHard as stopHtmlBgmHardEngine,
+  stopTitleMusic as stopTitleMusicEngine,
+  playHtmlBgm as playHtmlBgmEngine,
+  startTitleMusicFallback as startTitleMusicFallbackEngine,
+  stopAmbientLoop as stopAmbientLoopEngine,
+  startAmbientLoop as startAmbientLoopEngine,
+} from "./audio/engine.js";
 import { createMissionGenerator, updateMissions, onMaterialCollected, onZombieKilled, getMissionRewards, formatMissionStatus, MISSION_TYPES } from "./game/missionSystem.js";
-import { loadProgression, addGlobalXP, getLevel, formatProgression } from "./game/progression.js";
+import { loadProgression, addGlobalXP, getLevel, getXPForCurrentLevel, formatProgression } from "./game/progression.js";
 import gunMetalDiffuseUrl from "./assets/textures/gun_metal_diffuse.jpg";
 import gunMetalNormalUrl from "./assets/textures/gun_metal_normal.jpg";
 import gunMetalRoughUrl from "./assets/textures/gun_metal_rough.jpg";
@@ -44,6 +70,40 @@ import zombieClothDiffuseUrl from "./assets/textures/zombie_cloth_diffuse.jpg";
 import zombieSkinDetailUrl from "./assets/textures/zombie_skin_detail.jpg";
 import zombieFleshRottenRedUrl from "./assets/textures/zombie_flesh_rotten_red_1024.png";
 import grassDiffuseUrl from "./assets/textures/grass_diffuse.jpg";
+// Environment PBR textures (Polyhaven CC0) + blood decal (OpenGameArt CC0)
+import asphaltDiffuseUrl from "./assets/textures/asphalt_diffuse.jpg";
+import asphaltNormalUrl  from "./assets/textures/asphalt_normal.jpg";
+import asphaltRoughUrl   from "./assets/textures/asphalt_rough.jpg";
+import concreteDiffuseUrl from "./assets/textures/concrete_diffuse.jpg";
+import concreteNormalUrl  from "./assets/textures/concrete_normal.jpg";
+import concreteRoughUrl   from "./assets/textures/concrete_rough.jpg";
+import brickDiffuseUrl    from "./assets/textures/brick_diffuse.jpg";
+import brickNormalUrl     from "./assets/textures/brick_normal.jpg";
+import brickRoughUrl      from "./assets/textures/brick_rough.jpg";
+import rustyMetalDiffuseUrl from "./assets/textures/rusty_metal_diffuse.jpg";
+import rustyMetalNormalUrl  from "./assets/textures/rusty_metal_normal.jpg";
+import rustyMetalRoughUrl   from "./assets/textures/rusty_metal_rough.jpg";
+import dirtDiffuseUrl       from "./assets/textures/dirt_diffuse.jpg";
+import dirtNormalUrl        from "./assets/textures/dirt_normal.jpg";
+import dirtRoughUrl         from "./assets/textures/dirt_rough.jpg";
+import woodPlanksDiffuseUrl from "./assets/textures/wood_planks_diffuse.jpg";
+import woodPlanksNormalUrl  from "./assets/textures/wood_planks_normal.jpg";
+import woodPlanksRoughUrl   from "./assets/textures/wood_planks_rough.jpg";
+import bloodSplatterUrl     from "./assets/textures/blood_splatter_decal.png";
+import bloodDropsUrl        from "./assets/textures/blood_drops_decal.png";
+// New feature textures (ambientCG CC0)
+import turretBodyDiffuseUrl  from "./assets/textures/turret_body_diffuse.jpg";
+import turretBodyNormalUrl   from "./assets/textures/turret_body_normal.jpg";
+import turretBodyRoughUrl    from "./assets/textures/turret_body_rough.jpg";
+import turretBarrelDiffuseUrl from "./assets/textures/turret_barrel_diffuse.jpg";
+import turretBarrelNormalUrl  from "./assets/textures/turret_barrel_normal.jpg";
+import turretBarrelRoughUrl   from "./assets/textures/turret_barrel_rough.jpg";
+import toxicBarrelDiffuseUrl from "./assets/textures/toxic_barrel_diffuse.jpg";
+import toxicBarrelNormalUrl  from "./assets/textures/toxic_barrel_normal.jpg";
+import toxicBarrelRoughUrl   from "./assets/textures/toxic_barrel_rough.jpg";
+import lootCrateDiffuseUrl   from "./assets/textures/loot_crate_diffuse.jpg";
+import lootCrateNormalUrl    from "./assets/textures/loot_crate_normal.jpg";
+import lootCrateRoughUrl     from "./assets/textures/loot_crate_rough.jpg";
 const ak47ModelUrl = new URL("../textured_ak47_-_free_for_download.glb", import.meta.url).href;
 const remingtonModelUrl = new URL("../call_of_duty_black_ops_cold_war_-_gallo_sa12.glb", import.meta.url).href;
 /** Textured handgun GLB (Webaverse sample asset — https://github.com/webaverse/pistol ) */
@@ -58,6 +118,22 @@ const messageEl = document.querySelector("#message");
 const minimapEl = document.querySelector("#minimap");
 const minimapCtx = minimapEl.getContext("2d");
 const damageFlashEl = document.querySelector("#damage-flash");
+const damageDirEl = document.querySelector("#damage-direction");
+let _damageDirTimer = 0;
+
+/** Show a directional damage indicator pointing toward the source position. */
+function showDamageDirection(sourcePos) {
+  if (!damageDirEl) return;
+  // Compute angle from player facing direction to the attacker
+  const dx = sourcePos.x - player.position.x;
+  const dz = sourcePos.z - player.position.z;
+  const angleToSource = Math.atan2(-dx, -dz); // world space
+  const relAngle = angleToSource - player.yaw; // relative to camera
+  // Rotate the indicator element (CSS arrow points up, rotate to match)
+  damageDirEl.style.transform = `rotate(${relAngle}rad)`;
+  damageDirEl.style.opacity = "1";
+  _damageDirTimer = 0.65;
+}
 const crosshairEl = document.querySelector("#crosshair");
 const hitMarkerEl = document.querySelector("#hit-marker");
 const worldStatsEl = document.querySelector("#world-stats");
@@ -210,22 +286,26 @@ barkDiffuse.wrapS = THREE.RepeatWrapping;
 barkDiffuse.wrapT = THREE.RepeatWrapping;
 barkDiffuse.repeat.set(1, 2.2);
 barkDiffuse.colorSpace = THREE.SRGBColorSpace;
+barkDiffuse.anisotropy = 8;
 
 const barkBump = textureLoader.load(treeBarkBumpUrl);
 barkBump.wrapS = THREE.RepeatWrapping;
 barkBump.wrapT = THREE.RepeatWrapping;
 barkBump.repeat.set(1, 2.2);
+barkBump.anisotropy = 8;
 
 const zombieCloth = textureLoader.load(zombieClothDiffuseUrl);
 zombieCloth.wrapS = THREE.RepeatWrapping;
 zombieCloth.wrapT = THREE.RepeatWrapping;
 zombieCloth.repeat.set(0.7, 0.7);
 zombieCloth.colorSpace = THREE.SRGBColorSpace;
+zombieCloth.anisotropy = 8;
 
 const zombieSkinDetail = textureLoader.load(zombieSkinDetailUrl);
 zombieSkinDetail.wrapS = THREE.RepeatWrapping;
 zombieSkinDetail.wrapT = THREE.RepeatWrapping;
 zombieSkinDetail.repeat.set(1.2, 1.2);
+zombieSkinDetail.anisotropy = 8;
 
 // Web-sourced texture (OpenGameArt/LPC): rotten flesh diffuse.
 const zombieFleshRottenRed = textureLoader.load(zombieFleshRottenRedUrl);
@@ -233,207 +313,133 @@ zombieFleshRottenRed.wrapS = THREE.RepeatWrapping;
 zombieFleshRottenRed.wrapT = THREE.RepeatWrapping;
 zombieFleshRottenRed.repeat.set(1.4, 1.4);
 zombieFleshRottenRed.colorSpace = THREE.SRGBColorSpace;
+zombieFleshRottenRed.anisotropy = 8;
 
 const gunMetalDiffuse = textureLoader.load(gunMetalDiffuseUrl);
 gunMetalDiffuse.wrapS = THREE.RepeatWrapping;
 gunMetalDiffuse.wrapT = THREE.RepeatWrapping;
 gunMetalDiffuse.repeat.set(2.2, 2.2);
 gunMetalDiffuse.colorSpace = THREE.SRGBColorSpace;
+gunMetalDiffuse.anisotropy = 8;
 
 const gunMetalNormal = textureLoader.load(gunMetalNormalUrl);
 gunMetalNormal.wrapS = THREE.RepeatWrapping;
 gunMetalNormal.wrapT = THREE.RepeatWrapping;
 gunMetalNormal.repeat.set(2.2, 2.2);
+gunMetalNormal.anisotropy = 8;
 
 const gunMetalRough = textureLoader.load(gunMetalRoughUrl);
 gunMetalRough.wrapS = THREE.RepeatWrapping;
 gunMetalRough.wrapT = THREE.RepeatWrapping;
 gunMetalRough.repeat.set(2.2, 2.2);
+gunMetalRough.anisotropy = 8;
 
 const gunGripDiffuse = textureLoader.load(gunGripDiffuseUrl);
 gunGripDiffuse.wrapS = THREE.RepeatWrapping;
 gunGripDiffuse.wrapT = THREE.RepeatWrapping;
 gunGripDiffuse.repeat.set(1.6, 1.6);
 gunGripDiffuse.colorSpace = THREE.SRGBColorSpace;
+gunGripDiffuse.anisotropy = 8;
 
 const gunGripNormal = textureLoader.load(gunGripNormalUrl);
 gunGripNormal.wrapS = THREE.RepeatWrapping;
 gunGripNormal.wrapT = THREE.RepeatWrapping;
 gunGripNormal.repeat.set(1.6, 1.6);
+gunGripNormal.anisotropy = 8;
 
 const gunGripRough = textureLoader.load(gunGripRoughUrl);
 gunGripRough.wrapS = THREE.RepeatWrapping;
 gunGripRough.wrapT = THREE.RepeatWrapping;
 gunGripRough.repeat.set(1.6, 1.6);
+gunGripRough.anisotropy = 8;
 
 const teammateJacketDiffuse = textureLoader.load(teammateJacketDiffuseUrl);
 teammateJacketDiffuse.wrapS = THREE.RepeatWrapping;
 teammateJacketDiffuse.wrapT = THREE.RepeatWrapping;
 teammateJacketDiffuse.repeat.set(1.2, 1.2);
 teammateJacketDiffuse.colorSpace = THREE.SRGBColorSpace;
+teammateJacketDiffuse.anisotropy = 8;
 
 const teammateJacketRough = textureLoader.load(teammateJacketRoughUrl);
 teammateJacketRough.wrapS = THREE.RepeatWrapping;
 teammateJacketRough.wrapT = THREE.RepeatWrapping;
 teammateJacketRough.repeat.set(1.2, 1.2);
+teammateJacketRough.anisotropy = 8;
 
 const teammateJacketNormal = textureLoader.load(teammateJacketNormalUrl);
 teammateJacketNormal.wrapS = THREE.RepeatWrapping;
 teammateJacketNormal.wrapT = THREE.RepeatWrapping;
 teammateJacketNormal.repeat.set(1.2, 1.2);
+teammateJacketNormal.anisotropy = 8;
 
 const teammatePantsDiffuse = textureLoader.load(teammatePantsDiffuseUrl);
 teammatePantsDiffuse.wrapS = THREE.RepeatWrapping;
 teammatePantsDiffuse.wrapT = THREE.RepeatWrapping;
 teammatePantsDiffuse.repeat.set(1.2, 1.2);
 teammatePantsDiffuse.colorSpace = THREE.SRGBColorSpace;
+teammatePantsDiffuse.anisotropy = 8;
 
 const teammatePantsRough = textureLoader.load(teammatePantsRoughUrl);
 teammatePantsRough.wrapS = THREE.RepeatWrapping;
 teammatePantsRough.wrapT = THREE.RepeatWrapping;
 teammatePantsRough.repeat.set(1.2, 1.2);
+teammatePantsRough.anisotropy = 8;
 
 const teammatePantsNormal = textureLoader.load(teammatePantsNormalUrl);
 teammatePantsNormal.wrapS = THREE.RepeatWrapping;
 teammatePantsNormal.wrapT = THREE.RepeatWrapping;
 teammatePantsNormal.repeat.set(1.2, 1.2);
+teammatePantsNormal.anisotropy = 8;
 
-/** Playable regions — noise, foliage, fog/sky tuning, ground canvas colors. */
-const WORLD_MAPS = [
-  {
-    id: "meadows",
-    name: "Verdant Meadows",
-    blurb: "Rolling hills and deep woods.",
-    noiseFreq: 1,
-    heightAmp: 0.13,
-    treesPerChunk: 12,
-    structureChance: 0.3,
-    groundTint: 0x89a86f,
-    groundFill: "#567c3d",
-    speckleRgb: [55, 90, 40],
-    stripeRgb: [35, 65, 22],
-    leafColor: 0x3f6f30,
-    trunkTint: 0xffffff,
-    hemiSky: 0xa5d7ff,
-    hemiGround: 0x2e392a,
-    skyHueShift: 0,
-    minimapFill: "rgba(68,95,58,0.72)",
-    bgm: "map-meadows.mp3",
-    weather: { type: "rain", chance: 0.35, intensity: 0.6 },
-  },
-  {
-    id: "dead_valley",
-    name: "Dead Valley",
-    blurb: "Gray mist, sparse dead trees.",
-    noiseFreq: 0.82,
-    heightAmp: 0.15,
-    treesPerChunk: 7,
-    structureChance: 0.38,
-    groundTint: 0x6a7062,
-    groundFill: "#4a5248",
-    speckleRgb: [62, 68, 58],
-    stripeRgb: [38, 42, 36],
-    leafColor: 0x3d4538,
-    trunkTint: 0x8a8a82,
-    hemiSky: 0x8a9cad,
-    hemiGround: 0x252a28,
-    skyHueShift: -0.03,
-    minimapFill: "rgba(72,78,70,0.75)",
-    bgm: "map-dead_valley.mp3",
-    weather: { type: "fog", chance: 0.65, intensity: 0.85 },
-  },
-  {
-    id: "frost",
-    name: "Frost Expanse",
-    blurb: "Frozen flats, ice-glazed crowns.",
-    noiseFreq: 1.15,
-    heightAmp: 0.09,
-    treesPerChunk: 5,
-    structureChance: 0.22,
-    groundTint: 0xb8d4dc,
-    groundFill: "#9eb8c4",
-    speckleRgb: [200, 220, 230],
-    stripeRgb: [120, 140, 155],
-    leafColor: 0xc5e8f0,
-    trunkTint: 0x6a5a4a,
-    hemiSky: 0xc8e8ff,
-    hemiGround: 0x3a484e,
-    skyHueShift: 0.04,
-    minimapFill: "rgba(130,160,175,0.72)",
-    bgm: "map-frost.mp3",
-    weather: { type: "snow", chance: 0.55, intensity: 0.7 },
-  },
-  {
-    id: "badlands",
-    name: "Badlands",
-    blurb: "Rust canyons, brutal slopes.",
-    noiseFreq: 0.62,
-    heightAmp: 0.2,
-    treesPerChunk: 2,
-    structureChance: 0.5,
-    groundTint: 0xc4906a,
-    groundFill: "#a86f48",
-    speckleRgb: [140, 85, 55],
-    stripeRgb: [90, 50, 35],
-    leafColor: 0x5c4a32,
-    trunkTint: 0x8b6914,
-    hemiSky: 0xffc9a0,
-    hemiGround: 0x4a3020,
-    skyHueShift: 0.06,
-    minimapFill: "rgba(120,82,52,0.75)",
-    bgm: "map-badlands.mp3",
-    weather: { type: "dust", chance: 0.4, intensity: 0.5 },
-  },
-  {
-    id: "ruins",
-    name: "Ruined City",
-    blurb: "Broken blocks and ash asphalt.",
-    noiseFreq: 1.45,
-    heightAmp: 0.07,
-    treesPerChunk: 4,
-    structureChance: 0.72,
-    groundTint: 0x5a5d62,
-    groundFill: "#3a3d42",
-    speckleRgb: [70, 72, 78],
-    stripeRgb: [35, 36, 40],
-    leafColor: 0x2f4a38,
-    trunkTint: 0x555555,
-    hemiSky: 0x8899aa,
-    hemiGround: 0x1c1e22,
-    skyHueShift: -0.02,
-    minimapFill: "rgba(58,62,68,0.75)",
-    bgm: "map-ruins.mp3",
-    weather: { type: "ash", chance: 0.5, intensity: 0.6 },
-  },
-  {
-    id: "outbreak_city",
-    name: "Outbreak City",
-    blurb: "Flat ruined streets — Kenney buildings + procedural asphalt.",
-    flatTerrain: true,
-    noiseFreq: 1,
-    heightAmp: 0,
-    treesPerChunk: 0,
-    structureChance: 0,
-    cityBuildingsPerChunk: 5,
-    useCityGroundTexture: true,
-    groundTint: 0x8f9399,
-    groundFill: "#567c3d",
-    speckleRgb: [55, 90, 40],
-    stripeRgb: [35, 65, 22],
-    leafColor: 0x2a3228,
-    trunkTint: 0x555555,
-    hemiSky: 0x9aa8c2,
-    hemiGround: 0x2a2d32,
-    skyHueShift: -0.01,
-    minimapFill: "rgba(72,76,82,0.78)",
-    bgm: "map-city.mp3",
-    weather: { type: "rain", chance: 0.45, intensity: 0.55 },
-  },
-];
+/** Load a tileable PBR set (diffuse + normal + rough) with consistent UV repeat.
+ *  Returns { map, normalMap, roughnessMap }. Used for asphalt, brick, concrete,
+ *  dirt, rusty metal, and weathered planks. */
+function loadPbrSet(diffUrl, normUrl, roughUrl, repeat = 4) {
+  const map = textureLoader.load(diffUrl);
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.repeat.set(repeat, repeat);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
 
-function mapById(id) {
-  return WORLD_MAPS.find((m) => m.id === id) || WORLD_MAPS[0];
+  const normalMap = textureLoader.load(normUrl);
+  normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
+  normalMap.repeat.set(repeat, repeat);
+  normalMap.anisotropy = 8;
+  normalMap.minFilter = THREE.LinearMipmapLinearFilter;
+
+  const roughnessMap = textureLoader.load(roughUrl);
+  roughnessMap.wrapS = roughnessMap.wrapT = THREE.RepeatWrapping;
+  roughnessMap.repeat.set(repeat, repeat);
+  roughnessMap.anisotropy = 8;
+  roughnessMap.minFilter = THREE.LinearMipmapLinearFilter;
+
+  return { map, normalMap, roughnessMap };
 }
+
+/** Shared PBR sets — loaded once, reused across all matching materials. */
+const asphaltPbr     = loadPbrSet(asphaltDiffuseUrl,    asphaltNormalUrl,    asphaltRoughUrl,    16);
+const concretePbr    = loadPbrSet(concreteDiffuseUrl,   concreteNormalUrl,   concreteRoughUrl,    1.5);
+const brickPbr       = loadPbrSet(brickDiffuseUrl,      brickNormalUrl,      brickRoughUrl,       1.5);
+const rustyMetalPbr  = loadPbrSet(rustyMetalDiffuseUrl, rustyMetalNormalUrl, rustyMetalRoughUrl,  1);
+const dirtPbr        = loadPbrSet(dirtDiffuseUrl,       dirtNormalUrl,       dirtRoughUrl,       16);
+const woodPlanksPbr  = loadPbrSet(woodPlanksDiffuseUrl, woodPlanksNormalUrl, woodPlanksRoughUrl,  1.2);
+// New feature PBR sets (ambientCG CC0)
+const turretBodyPbr   = loadPbrSet(turretBodyDiffuseUrl,   turretBodyNormalUrl,   turretBodyRoughUrl,   1);
+const turretBarrelPbr = loadPbrSet(turretBarrelDiffuseUrl, turretBarrelNormalUrl, turretBarrelRoughUrl, 1);
+const toxicBarrelPbr  = loadPbrSet(toxicBarrelDiffuseUrl,  toxicBarrelNormalUrl,  toxicBarrelRoughUrl,  1);
+const lootCratePbr    = loadPbrSet(lootCrateDiffuseUrl,    lootCrateNormalUrl,    lootCrateRoughUrl,    1);
+
+/** Blood splatter texture (CC0 OpenGameArt) — flat ground decals with RGBA transparency. */
+const bloodSplatterTex = textureLoader.load(bloodSplatterUrl);
+bloodSplatterTex.colorSpace = THREE.SRGBColorSpace;
+bloodSplatterTex.anisotropy = 8;
+bloodSplatterTex.minFilter = THREE.LinearMipmapLinearFilter;
+const bloodDropsTex = textureLoader.load(bloodDropsUrl);
+bloodDropsTex.colorSpace = THREE.SRGBColorSpace;
+bloodDropsTex.anisotropy = 8;
+bloodDropsTex.minFilter = THREE.LinearMipmapLinearFilter;
+
+/** Playable regions are defined in src/core/config.js (single source of truth). */
 
 let activeMapConfig = mapById(localStorage.getItem("zowg_map") || "meadows");
 let pendingMapId = activeMapConfig.id;
@@ -450,7 +456,33 @@ const _pGeoBlood  = new THREE.SphereGeometry(0.032, 4, 4);
 const _pGeoFire   = new THREE.SphereGeometry(0.08, 4, 4);
 const _pGeoSpark  = new THREE.SphereGeometry(0.025, 3, 3);
 const _pGeoDebris = new THREE.SphereGeometry(0.07, 4, 4);
-[_pGeoBlood, _pGeoFire, _pGeoSpark, _pGeoDebris].forEach(g => { g.userData.preventDispose = true; });
+const _pGeoDecal  = new THREE.CircleGeometry(0.7, 12);
+const _pGeoToxic  = new THREE.SphereGeometry(0.12, 4, 4);
+[_pGeoBlood, _pGeoFire, _pGeoSpark, _pGeoDebris, _pGeoDecal, _pGeoToxic].forEach(g => { g.userData.preventDispose = true; });
+
+// Particle material pool — avoids creating and disposing materials per particle.
+// Each particle still gets its own instance (needed for per-particle opacity) but
+// instances are recycled instead of being GC'd + GPU-destroyed every frame.
+const _particleMatPools = { blood: [], fireOrange: [], fireYellow: [], spark: [], dust: [], toxic: [] };
+function _getParticleMat(poolKey, color) {
+  const pool = _particleMatPools[poolKey];
+  if (pool.length > 0) {
+    const m = pool.pop();
+    m.opacity = 1;
+    m.visible = true;
+    return m;
+  }
+  return new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1, depthWrite: false });
+}
+function _returnParticleMat(poolKey, mat) {
+  if (_particleMatPools[poolKey].length < 200) _particleMatPools[poolKey].push(mat);
+  else mat.dispose();
+}
+
+/** Persistent ground-blood decals pool. Each kill drops one; old ones fade and
+ *  recycle when the cap is hit so the scene never accumulates unbounded meshes. */
+const MAX_BLOOD_DECALS = 40;
+const bloodDecals = [];
 
 /** Reusable Vector3 pool to reduce per-frame GC pressure. */
 const _v3Pool = Array.from({ length: 64 }, () => new THREE.Vector3());
@@ -613,6 +645,10 @@ async function loadCityBuildingLibrary() {
   const loader = new GLTFLoader();
   const path = `${assetBasePath()}city/buildings/`;
   loader.setPath(path);
+  // The city GLBs reference a shared texture folder by relative URI.
+  // Pin the resource path so those texture lookups resolve correctly when
+  // Vite serves the app from a relative base path.
+  loader.setResourcePath(path);
   try {
     for (const name of names) {
       const gltf = await loader.loadAsync(name);
@@ -626,8 +662,22 @@ async function loadCityBuildingLibrary() {
           const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
           for (const mat of mats) {
             if (!mat) continue;
-            if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
-            if (mat.emissiveMap) mat.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+            if (mat.map) {
+              mat.map.colorSpace = THREE.SRGBColorSpace;
+              mat.map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+              mat.map.minFilter = THREE.LinearMipmapLinearFilter;
+              mat.map.magFilter = THREE.LinearFilter;
+            }
+            if (mat.emissiveMap) {
+              mat.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+              mat.emissiveMap.anisotropy = renderer.capabilities.getMaxAnisotropy();
+            }
+            for (const key of ["normalMap", "roughnessMap", "metalnessMap", "aoMap"]) {
+              if (mat[key]) {
+                mat[key].anisotropy = renderer.capabilities.getMaxAnisotropy();
+                mat[key].minFilter = THREE.LinearMipmapLinearFilter;
+              }
+            }
             mat.needsUpdate = true;
           }
         }
@@ -709,6 +759,7 @@ let grenadeCount = 3;
 let molotovCount = 0;
 let landMineCount = 0;
 let spikeTrapCount = 0;
+let turretCount = 0;
 let isNight = false;
 let hordeNightActive = false;
 let hordeNightTimer = 0;
@@ -724,11 +775,16 @@ const molotovProjectiles = [];
 const molotovFires = [];
 const landMines = [];
 const spikeTraps = [];
+const turrets = [];
+const toxicBarrels = [];
+const lootCrates = [];
 const particles = [];
 const barrels = [];
 const acidPuddles = [];
+const acidProjectiles = [];
 const zombieCorpses = [];
 const distractions = [];
+const flyingDistractions = [];
 const supplyDrops = [];
 
 // Dynamic Event Director
@@ -770,17 +826,8 @@ const materials = {
   chemicals: 0,
 };
 
-/** Weather system state */
-const weatherState = {
-  active: false,
-  type: null,
-  intensity: 0,
-  particles: null,
-  velocities: null,
-  windDir: new THREE.Vector3(1, 0, 0.3).normalize(),
-  timer: 0,
-  nextChange: 30 + Math.random() * 60,
-};
+/** Weather system state — owned by ./world/weather.js */
+const weatherState = createWeather(scene);
 
 /** Barricade build mode */
 let buildMode = false;
@@ -817,22 +864,9 @@ const teammates = [];
 /** Calm menu / death screen loop (distinct from in-game map tracks). */
 const TITLE_BGM_FILE = "title.mp3";
 
-const audioSystem = {
-  ctx: null,
-  unlocked: false,
-  muted: localStorage.getItem("zowg_audio_muted") === "1",
-  master: null,
-  music: null,
-  ambient: null,
-  sfx: null,
-  ui: null,
-  titleTimer: null,
-  ambientNodes: [],
-  /** HTML5 element for reliable looping MP3 background music (Web Audio decode was easy to miss in-browser). */
-  bgmEl: null,
-  bgmCurrentFile: null,
-  bgmNominalVolume: 0.55,
-};
+/** Audio system state — all Web Audio nodes plus HTML5 BGM bookkeeping.
+ *  Implementation lives in ./audio/engine.js; this is just the data. */
+const audioSystem = createAudioState();
 
 // Re-exported via weaponSystem.js imports at top of file.
 
@@ -905,8 +939,8 @@ function triggerHitMarker(isHeadshot = false) {
 function toggleAudioMuted() {
   audioSystem.muted = !audioSystem.muted;
   if (audioSystem.master) audioSystem.master.gain.value = audioSystem.muted ? 0 : 0.85;
-  localStorage.setItem("zowg_audio_muted", audioSystem.muted ? "1" : "0");
-  applyBgmVolume();
+  persistMutedFlag(audioSystem.muted);
+  applyBgmVolumeEngine(audioSystem);
   if (!audioSystem.muted) {
     if (audioSystem.unlocked) setAudioScene(gameState === "PLAYING" ? "playing" : gameState === "MENU_PAUSE" ? "pause" : "title");
     if (audioSystem.bgmEl?.src) audioSystem.bgmEl.play().catch(() => {});
@@ -916,401 +950,38 @@ function toggleAudioMuted() {
   updateAudioButtonLabel();
 }
 
-function createAudioGraph() {
-  if (audioSystem.ctx) return;
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  if (!AudioCtx) return;
-  const ctx = new AudioCtx();
-  audioSystem.ctx = ctx;
-  audioSystem.master = ctx.createGain();
-  audioSystem.music = ctx.createGain();
-  audioSystem.ambient = ctx.createGain();
-  audioSystem.sfx = ctx.createGain();
-  audioSystem.ui = ctx.createGain();
-
-  audioSystem.music.gain.value = 0.32;
-  audioSystem.ambient.gain.value = 0.26;
-  audioSystem.sfx.gain.value = 0.78;
-  audioSystem.ui.gain.value = 0.45;
-  audioSystem.master.gain.value = audioSystem.muted ? 0 : 0.85;
-
-  audioSystem.music.connect(audioSystem.master);
-  audioSystem.ambient.connect(audioSystem.master);
-  audioSystem.sfx.connect(audioSystem.master);
-  audioSystem.ui.connect(audioSystem.master);
-  audioSystem.master.connect(ctx.destination);
-
-  // Spatial listener (HRTF-based 3D audio)
-  audioSystem.listener = ctx.listener;
-  // Forward orientation is -Z, up is +Y in Three.js camera space
-  if (audioSystem.listener.positionX) {
-    audioSystem.listener.positionX.value = 0;
-    audioSystem.listener.positionY.value = 0;
-    audioSystem.listener.positionZ.value = 0;
-  }
-}
-
 async function ensureAudioUnlocked() {
-  createAudioGraph();
-  if (!audioSystem.ctx) return;
-  if (audioSystem.ctx.state !== "running") {
-    try {
-      await audioSystem.ctx.resume();
-    } catch {
-      return;
-    }
-  }
-  audioSystem.unlocked = true;
+  const ok = await ensureAudioUnlockedEngine(audioSystem);
+  if (!ok) return;
   if (gameState === "PLAYING") setAudioScene("playing");
   else if (gameState === "MENU_DEATH") setAudioScene("death");
   else if (gameState === "MENU_PAUSE") setAudioScene("pause");
   else setAudioScene("title");
 }
 
-function playNoise(duration, gainNode, options = {}) {
-  if (!audioSystem.unlocked || audioSystem.muted || !audioSystem.ctx || !gainNode) return;
-  const { volume = 0.2, hp = 300, lp = 4000 } = options;
-  const ctx = audioSystem.ctx;
-  const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * duration), ctx.sampleRate);
-  const channel = buffer.getChannelData(0);
-  for (let i = 0; i < channel.length; i += 1) channel[i] = Math.random() * 2 - 1;
-  const source = ctx.createBufferSource();
-  source.buffer = buffer;
-  const highPass = ctx.createBiquadFilter();
-  highPass.type = "highpass";
-  highPass.frequency.value = hp;
-  const lowPass = ctx.createBiquadFilter();
-  lowPass.type = "lowpass";
-  lowPass.frequency.value = lp;
-  const g = ctx.createGain();
-  const t = ctx.currentTime;
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(Math.max(0.001, volume), t + 0.01);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + duration);
-  source.connect(highPass);
-  highPass.connect(lowPass);
-  lowPass.connect(g);
-  g.connect(gainNode);
-  source.start(t);
-  source.stop(t + duration + 0.01);
+// ─── Audio wrappers ───────────────────────────────────────────────────────────
+// Implementation lives in ./audio/engine.js. Wrappers below glue the engine
+// to game state (camera, gameState, activeMapConfig) without leaking those
+// dependencies into the engine module.
+
+function playNoise(duration, gainNode, options) { playNoiseEngine(audioSystem, duration, gainNode, options); }
+function playTone(freq, duration, gainNode, options) { playToneEngine(audioSystem, freq, duration, gainNode, options); }
+function playSpatialSfx(name, worldPosition, volume = 1) { playSpatialSfxEngine(audioSystem, camera, name, worldPosition, volume); }
+function playSfx(name, volume = 1) { playSfxEngine(audioSystem, name, volume); }
+function startTitleMusicFallback() { startTitleMusicFallbackEngine(audioSystem); }
+function startAmbientLoop() { startAmbientLoopEngine(audioSystem); }
+function stopAmbientLoop() { stopAmbientLoopEngine(audioSystem); }
+function stopTitleMusic() { stopTitleMusicEngine(audioSystem); }
+function stopHtmlBgmHard() { stopHtmlBgmHardEngine(audioSystem); }
+
+/** Fallback handler invoked by the engine when an MP3 fails to load/play.
+ *  Project ships without all BGM tracks, so we degrade to procedural audio. */
+function onBgmLoadError(filename) {
+  if (filename === TITLE_BGM_FILE) startTitleMusicFallback();
+  else startAmbientLoop();
 }
 
-function playTone(freq, duration, gainNode, options = {}) {
-  if (!audioSystem.unlocked || audioSystem.muted || !audioSystem.ctx || !gainNode) return;
-  const { volume = 0.2, type = "triangle", glide = 0 } = options;
-  const ctx = audioSystem.ctx;
-  const osc = ctx.createOscillator();
-  osc.type = type;
-  const g = ctx.createGain();
-  const t = ctx.currentTime;
-  osc.frequency.setValueAtTime(freq, t);
-  if (glide !== 0) osc.frequency.linearRampToValueAtTime(freq + glide, t + duration);
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(Math.max(0.001, volume), t + 0.01);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + duration);
-  osc.connect(g);
-  g.connect(gainNode);
-  osc.start(t);
-  osc.stop(t + duration + 0.01);
-}
-
-/** Play a spatial 3D sound at a world position (e.g., zombie growl, explosion).
- * Uses HRTF panning relative to the audio listener (camera/player position).
- */
-const _spatialForward = new THREE.Vector3();
-const _spatialUp = new THREE.Vector3();
-function playSpatialSfx(name, worldPosition, volume = 1) {
-  if (!audioSystem.unlocked || audioSystem.muted || !audioSystem.ctx) return;
-  const ctx = audioSystem.ctx;
-  const panner = ctx.createPanner();
-  panner.panningModel = "HRTF";
-  panner.distanceModel = "inverse";
-  panner.refDistance = 6;
-  panner.maxDistance = 100;
-  panner.rolloffFactor = 1.2;
-  panner.coneInnerAngle = 360;
-  panner.coneOuterAngle = 360;
-  panner.coneOuterGain = 0;
-
-  // Update listener position/orientation from camera
-  const cam = camera;
-  _spatialForward.set(0, 0, -1).applyQuaternion(cam.quaternion).normalize();
-  _spatialUp.set(0, 1, 0).applyQuaternion(cam.quaternion).normalize();
-  if (audioSystem.listener.positionX) {
-    audioSystem.listener.positionX.value = cam.position.x;
-    audioSystem.listener.positionY.value = cam.position.y;
-    audioSystem.listener.positionZ.value = cam.position.z;
-    audioSystem.listener.forwardX.value = _spatialForward.x;
-    audioSystem.listener.forwardY.value = _spatialForward.y;
-    audioSystem.listener.forwardZ.value = _spatialForward.z;
-    audioSystem.listener.upX.value = _spatialUp.x;
-    audioSystem.listener.upY.value = _spatialUp.y;
-    audioSystem.listener.upZ.value = _spatialUp.z;
-  } else {
-    audioSystem.listener.setPosition(cam.position.x, cam.position.y, cam.position.z);
-    audioSystem.listener.setOrientation(_spatialForward.x, _spatialForward.y, _spatialForward.z, _spatialUp.x, _spatialUp.y, _spatialUp.z);
-  }
-
-  panner.positionX.value = worldPosition.x;
-  panner.positionY.value = worldPosition.y;
-  panner.positionZ.value = worldPosition.z;
-
-  const gain = ctx.createGain();
-  gain.gain.value = volume;
-
-  const outGain = ctx.createGain();
-  outGain.gain.value = 1.0;
-  outGain.connect(audioSystem.sfx);
-
-  switch (name) {
-    case "zombie_growl": {
-      const osc = ctx.createOscillator();
-      const noiseGain = ctx.createGain();
-      osc.type = "sawtooth";
-      osc.frequency.value = 90 + Math.random() * 40;
-      osc.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 0.35);
-      noiseGain.gain.value = 0.14 * volume;
-      noiseGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-      osc.connect(panner);
-      panner.connect(gain);
-      gain.connect(outGain);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.45);
-      break;
-    }
-    case "zombie_death": {
-      const osc = ctx.createOscillator();
-      osc.type = "sawtooth";
-      osc.frequency.value = 105;
-      osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.22);
-      gain.gain.value = 0.15 * volume;
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.28);
-      osc.connect(panner);
-      panner.connect(gain);
-      gain.connect(outGain);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.3);
-      break;
-    }
-    case "explosion": {
-      const bufferSize = ctx.sampleRate * 0.5;
-      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.08));
-      const src = ctx.createBufferSource();
-      src.buffer = buffer;
-      gain.gain.value = 0.5 * volume;
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.55);
-      src.connect(panner);
-      panner.connect(gain);
-      gain.connect(outGain);
-      src.start();
-      break;
-    }
-    default:
-      // Fall back to non-spatial for unknown sounds
-      playSfx(name, volume);
-      return;
-  }
-}
-
-function playSfx(name, volume = 1) {
-  if (!audioSystem.unlocked || audioSystem.muted) return;
-  switch (name) {
-    case "ui_click":
-      playTone(900, 0.05, audioSystem.ui, { volume: 0.1 * volume, type: "square", glide: -120 });
-      break;
-    case "gunshot_player":
-      playNoise(0.09, audioSystem.sfx, { volume: 0.24 * volume, hp: 500, lp: 5000 });
-      playTone(120, 0.08, audioSystem.sfx, { volume: 0.16 * volume, type: "sawtooth", glide: -60 });
-      break;
-    case "teammate_shot":
-      playNoise(0.06, audioSystem.sfx, { volume: 0.15 * volume, hp: 600, lp: 4200 });
-      playTone(180, 0.05, audioSystem.sfx, { volume: 0.06 * volume, type: "triangle", glide: -40 });
-      break;
-    case "reload_player":
-      playTone(320, 0.07, audioSystem.sfx, { volume: 0.08 * volume, type: "square", glide: -35 });
-      playTone(420, 0.07, audioSystem.sfx, { volume: 0.06 * volume, type: "square", glide: -20 });
-      break;
-    case "zombie_hit":
-      playTone(130, 0.11, audioSystem.sfx, { volume: 0.1 * volume, type: "sawtooth", glide: -30 });
-      break;
-    case "zombie_death":
-      playTone(105, 0.22, audioSystem.sfx, { volume: 0.15 * volume, type: "sawtooth", glide: -70 });
-      break;
-    case "shotgun_player":
-      playNoise(0.16, audioSystem.sfx, { volume: 0.42 * volume, hp: 160, lp: 3000 });
-      playTone(80, 0.14, audioSystem.sfx, { volume: 0.25 * volume, type: "sawtooth", glide: -50 });
-      break;
-    case "grenade_throw":
-      playTone(520, 0.06, audioSystem.sfx, { volume: 0.07 * volume, type: "square", glide: -90 });
-      playNoise(0.04, audioSystem.sfx, { volume: 0.06 * volume, hp: 900, lp: 3200 });
-      break;
-    case "explosion":
-      playNoise(0.6, audioSystem.sfx, { volume: 0.6 * volume, hp: 18, lp: 800 });
-      playTone(52, 0.45, audioSystem.sfx, { volume: 0.38 * volume, type: "sawtooth", glide: -28 });
-      break;
-    case "boss_alert":
-      playTone(108, 0.7, audioSystem.sfx, { volume: 0.32 * volume, type: "sawtooth", glide: -18 });
-      playTone(80, 0.9, audioSystem.sfx, { volume: 0.26 * volume, type: "square", glide: -12 });
-      break;
-    case "acid_spit":
-      playNoise(0.28, audioSystem.sfx, { volume: 0.18 * volume, hp: 200, lp: 2200 });
-      playTone(440, 0.12, audioSystem.sfx, { volume: 0.08 * volume, type: "sawtooth", glide: 90 });
-      break;
-    case "hunter_leap":
-      playTone(180, 0.18, audioSystem.sfx, { volume: 0.25 * volume, type: "sawtooth", glide: -120 });
-      break;
-    case "charger_charge":
-      playNoise(0.55, audioSystem.sfx, { volume: 0.45 * volume, hp: 60, lp: 800 });
-      break;
-    case "noise_maker":
-      playTone(800, 0.25, audioSystem.sfx, { volume: 0.35 * volume, type: "square", glide: -200 });
-      playNoise(0.4, audioSystem.sfx, { volume: 0.2 * volume, hp: 400, lp: 4000 });
-      break;
-    case "melee_knife":
-      playNoise(0.05, audioSystem.sfx, { volume: 0.22 * volume, hp: 1200, lp: 5000 });
-      playTone(420, 0.06, audioSystem.sfx, { volume: 0.1 * volume, type: "triangle" });
-      break;
-    case "footstep":
-      playNoise(0.04, audioSystem.sfx, { volume: 0.06 * volume, hp: 100, lp: 800 });
-      playTone(60 + Math.random() * 30, 0.03, audioSystem.sfx, { volume: 0.04 * volume, type: "triangle" });
-      break;
-    case "footstep_sprint":
-      playNoise(0.06, audioSystem.sfx, { volume: 0.09 * volume, hp: 100, lp: 1000 });
-      playTone(50 + Math.random() * 40, 0.04, audioSystem.sfx, { volume: 0.06 * volume, type: "triangle" });
-      break;
-    case "supply_drop":
-      playTone(660, 0.35, audioSystem.sfx, { volume: 0.28 * volume, type: "sine", glide: -100 });
-      playTone(880, 0.5, audioSystem.sfx, { volume: 0.2 * volume, type: "sine" });
-      break;
-    case "zombie_revive":
-      playTone(95, 0.55, audioSystem.sfx, { volume: 0.22 * volume, type: "sawtooth", glide: 25 });
-      break;
-    case "skill_up":
-      playTone(523.25, 0.15, audioSystem.ui, { volume: 0.35 * volume, type: "sine" });
-      playTone(659.25, 0.25, audioSystem.ui, { volume: 0.3 * volume, type: "sine" });
-      break;
-    case "teammate_downed":
-      playTone(200, 0.3, audioSystem.sfx, { volume: 0.2 * volume, type: "sawtooth", glide: -80 });
-      playTone(150, 0.4, audioSystem.sfx, { volume: 0.15 * volume, type: "square", glide: -40 });
-      break;
-    default:
-      break;
-  }
-}
-
-function musicAssetUrl(filename) {
-  let base = import.meta.env.BASE_URL || "/";
-  if (!base.endsWith("/")) base += "/";
-  return `${base}music/${encodeURIComponent(filename)}`;
-}
-
-function ensureBgmElement() {
-  if (audioSystem.bgmEl) return audioSystem.bgmEl;
-  const el = document.createElement("audio");
-  el.setAttribute("playsinline", "true");
-  el.preload = "auto";
-  el.addEventListener("error", () => {
-    // The project currently ships without music assets; fall back to procedural audio.
-    if (audioSystem.bgmCurrentFile === TITLE_BGM_FILE) startTitleMusicFallback();
-    else startAmbientLoop();
-  });
-  document.body.appendChild(el);
-  audioSystem.bgmEl = el;
-  return el;
-}
-
-function applyBgmVolume() {
-  const el = audioSystem.bgmEl;
-  if (!el) return;
-  el.volume = audioSystem.muted ? 0 : audioSystem.bgmNominalVolume;
-}
-
-function stopHtmlBgmHard() {
-  const el = audioSystem.bgmEl;
-  if (!el) return;
-  el.pause();
-  el.removeAttribute("src");
-  el.load();
-  audioSystem.bgmCurrentFile = null;
-}
-
-function stopTitleMusic() {
-  stopHtmlBgmHard();
-  if (audioSystem.titleTimer) {
-    clearInterval(audioSystem.titleTimer);
-    audioSystem.titleTimer = null;
-  }
-}
-
-async function playHtmlBgm(filename) {
-  if (!audioSystem.unlocked || !filename) return;
-  const el = ensureBgmElement();
-  if (audioSystem.bgmCurrentFile === filename && el.src) {
-    applyBgmVolume();
-    try {
-      await el.play();
-    } catch {
-      if (filename === TITLE_BGM_FILE) startTitleMusicFallback();
-      else startAmbientLoop();
-    }
-    return;
-  }
-  audioSystem.bgmCurrentFile = filename;
-  el.loop = true;
-  el.src = musicAssetUrl(filename);
-  el.load();
-  applyBgmVolume();
-  try {
-    await el.play();
-  } catch {
-    if (filename === TITLE_BGM_FILE) startTitleMusicFallback();
-    else startAmbientLoop();
-  }
-}
-
-function startTitleMusicFallback() {
-  if (!audioSystem.unlocked || audioSystem.muted || audioSystem.titleTimer) return;
-  const el = audioSystem.bgmEl;
-  if (el && el.src && !el.paused) return;
-  const notes = [220, 261.63, 329.63, 392, 329.63, 261.63];
-  let idx = 0;
-  audioSystem.titleTimer = setInterval(() => {
-    playTone(notes[idx % notes.length], 0.24, audioSystem.music, { volume: 0.12, type: "triangle", glide: -8 });
-    if (idx % 2 === 0) playTone(notes[(idx + 2) % notes.length] / 2, 0.32, audioSystem.music, { volume: 0.05, type: "sine" });
-    idx += 1;
-  }, 320);
-}
-
-function stopAmbientLoop() {
-  for (const n of audioSystem.ambientNodes) {
-    try {
-      n.stop();
-    } catch {
-      // no-op
-    }
-  }
-  audioSystem.ambientNodes = [];
-}
-
-function startAmbientLoop() {
-  if (!audioSystem.unlocked || audioSystem.muted || audioSystem.ambientNodes.length > 0) return;
-  const el = audioSystem.bgmEl;
-  if (el && el.src && !el.paused) return;
-  const base = [58, 73];
-  for (const f of base) {
-    const osc = audioSystem.ctx.createOscillator();
-    const g = audioSystem.ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = f;
-    g.gain.value = 0.03;
-    osc.connect(g);
-    g.connect(audioSystem.ambient);
-    osc.start();
-    audioSystem.ambientNodes.push(osc);
-  }
-}
+function playHtmlBgm(filename) { return playHtmlBgmEngine(audioSystem, filename, onBgmLoadError); }
 
 function setAudioScene(mode) {
   if (!audioSystem.unlocked) return;
@@ -1321,9 +992,7 @@ function setAudioScene(mode) {
   }
   if (mode === "title" || mode === "death") {
     void playHtmlBgm(TITLE_BGM_FILE);
-  } else if (mode === "pause") {
-    void playHtmlBgm(activeMapConfig.bgm);
-  } else if (mode === "playing") {
+  } else if (mode === "pause" || mode === "playing") {
     void playHtmlBgm(activeMapConfig.bgm);
   }
 }
@@ -1358,7 +1027,19 @@ function setMenuMode(mode) {
     menuTitleEl.textContent = "You Died";
     const runXP = Math.floor(score * 0.05 + player.kills * 2);
     const progResult = addGlobalXP(playerProgression, runXP);
-    let progMsg = `Wave ${wave} | Kills ${player.kills} | Score ${score} | +${runXP} Global XP`;
+
+    // ─── High score persistence ────────────────────────────────────────
+    const prevBest = parseInt(localStorage.getItem("zowg_highscore") || "0", 10);
+    const isNewRecord = score > prevBest;
+    if (isNewRecord) localStorage.setItem("zowg_highscore", String(score));
+    const prevBestWave = parseInt(localStorage.getItem("zowg_highwave") || "0", 10);
+    if (wave > prevBestWave) localStorage.setItem("zowg_highwave", String(wave));
+    const prevBestKills = parseInt(localStorage.getItem("zowg_highkills") || "0", 10);
+    if (player.kills > prevBestKills) localStorage.setItem("zowg_highkills", String(player.kills));
+
+    let progMsg = `Wave ${wave} | Kills ${player.kills} | Score ${score}`;
+    if (isNewRecord) progMsg += " ★ NEW HIGH SCORE!";
+    progMsg += ` | Best: ${Math.max(score, prevBest)} | +${runXP} Global XP`;
     if (progResult.leveled) {
       progMsg += ` | ⬆ Lvl ${getLevel(playerProgression)}!`;
       if (progResult.newUnlocks.length > 0) {
@@ -1410,6 +1091,7 @@ function saveRun() {
     molotovCount,
     landMineCount,
     spikeTrapCount,
+    turretCount,
     noiseMakerCount,
     activeMapId: activeMapConfig.id,
     weapons: player.weapons.map(w => ({ name: w.name, ammo: w.ammo, reserve: w.reserve, upgrades: w.upgrades })),
@@ -1458,6 +1140,7 @@ function loadRun() {
     molotovCount = save.molotovCount ?? 0;
     landMineCount = save.landMineCount ?? 0;
     spikeTrapCount = save.spikeTrapCount ?? 0;
+    turretCount = save.turretCount ?? 0;
     noiseMakerCount = save.noiseMakerCount ?? 2;
     if (save.weapons) {
       for (let i = 0; i < Math.min(save.weapons.length, player.weapons.length); i++) {
@@ -1597,6 +1280,33 @@ const eyeMaterials = {
   screamer: new THREE.MeshBasicMaterial({ color: 0xaa44ff }),
 };
 
+/** Asset bag passed to ./entities/zombie.js — keeps the module pure while
+ *  reusing every shared material & geometry instance the engine already owns. */
+const zombieAssets = {
+  geometries: { box: gBox1x1x1, sphere: gSphere1, sphereLow: gSphereLow },
+  materials: {
+    skin: zombieSkinMaterial,
+    cloth: zombieClothMaterial,
+    blood: zombieBloodMaterial,
+    spitterSkin: spitterSkinMat,
+    spitterCloth: spitterClothMat,
+    acidSac: acidSacMat,
+    hunterSkin: hunterSkinMat,
+    hunterCloth: hunterClothMat,
+    chargerSkin: chargerSkinMat,
+    chargerCloth: chargerClothMat,
+    juggernautSkin: juggernautSkinMat,
+    juggernautCloth: juggernautClothMat,
+    juggernautArmor: juggernautArmorMat,
+    boomerSkin: boomerSkinMat,
+    boomerCloth: boomerClothMat,
+    boomerBloat: boomerBloatMat,
+    screamerSkin: screamerSkinMat,
+    screamerCloth: screamerClothMat,
+    eyes: eyeMaterials,
+  },
+};
+
 const teammateJacketMaterial = new THREE.MeshStandardMaterial({
   map: teammateJacketDiffuse,
   roughnessMap: teammateJacketRough,
@@ -1645,39 +1355,48 @@ const leafMaterial = new THREE.MeshStandardMaterial({
 });
 
 function applyActiveMapVisuals() {
+  // Free any procedurally-generated canvas textures from the previous map.
+  if (groundDiffuse && groundDiffuse.dispose) {
+    groundDiffuse.dispose();
+    groundDiffuse = null;
+  }
+  if (cityStreetDiffuse && cityStreetDiffuse.dispose) {
+    cityStreetDiffuse.dispose();
+    cityStreetDiffuse = null;
+  }
+
   if (activeMapConfig.useCityGroundTexture) {
-    if (groundDiffuse) {
-      groundDiffuse.dispose();
-      groundDiffuse = null;
-    }
-    if (cityStreetDiffuse) {
-      cityStreetDiffuse.dispose();
-      cityStreetDiffuse = null;
-    }
-    cityStreetDiffuse = createCityStreetGroundTexture();
-    groundMaterial.map = cityStreetDiffuse;
-    groundMaterial.normalMap = null;
-    groundMaterial.roughness = 0.9;
-    groundMaterial.metalness = 0.06;
+    // Outbreak City — real PBR asphalt (Polyhaven CC0).
+    groundMaterial.map = asphaltPbr.map;
+    groundMaterial.normalMap = asphaltPbr.normalMap;
+    groundMaterial.roughnessMap = asphaltPbr.roughnessMap;
+    groundMaterial.normalScale = new THREE.Vector2(0.6, 0.6);
+    groundMaterial.roughness = 1.0;
+    groundMaterial.metalness = 0.0;
+    groundMaterial.color.setHex(0x9b9ea4);
+  } else if (activeMapConfig.id === "badlands") {
+    // Badlands — PBR dirt/mud.
+    groundMaterial.map = dirtPbr.map;
+    groundMaterial.normalMap = dirtPbr.normalMap;
+    groundMaterial.roughnessMap = dirtPbr.roughnessMap;
+    groundMaterial.normalScale = new THREE.Vector2(0.8, 0.8);
+    groundMaterial.roughness = 1.0;
+    groundMaterial.metalness = 0.0;
     groundMaterial.color.setHex(activeMapConfig.groundTint);
-    groundMaterial.needsUpdate = true;
   } else {
-    if (cityStreetDiffuse) {
-      cityStreetDiffuse.dispose();
-      cityStreetDiffuse = null;
-    }
-    if (groundDiffuse) groundDiffuse.dispose();
+    // Other maps still use the procedural canvas texture (grass / frost / etc).
     groundDiffuse = createGroundTextureForMap(
       activeMapConfig,
       grassGroundDiffuse?.image?.complete ? grassGroundDiffuse : null,
     );
     groundMaterial.map = groundDiffuse;
     groundMaterial.normalMap = null;
+    groundMaterial.roughnessMap = null;
     groundMaterial.roughness = 0.95;
     groundMaterial.metalness = 0;
     groundMaterial.color.setHex(activeMapConfig.groundTint);
-    groundMaterial.needsUpdate = true;
   }
+  groundMaterial.needsUpdate = true;
   leafMaterial.color.setHex(activeMapConfig.leafColor);
   trunkMaterial.color.setHex(activeMapConfig.trunkTint);
   hemi.color.setHex(activeMapConfig.hemiSky);
@@ -1970,6 +1689,18 @@ function createFirstPersonWeapon() {
   rocketGroup.scale.setScalar(0.9);
   rocketGroup.visible = false;
 
+  const smgGroup = createSmgMesh(gunMetalMaterial, gunGripMaterial);
+  smgGroup.scale.setScalar(0.95);
+  smgGroup.visible = false;
+
+  const revolverGroup = createRevolverMesh(gunMetalMaterial, gunGripMaterial);
+  revolverGroup.scale.setScalar(1.05);
+  revolverGroup.visible = false;
+
+  const minigunGroup = createMinigunMesh(gunMetalMaterial, gunGripMaterial);
+  minigunGroup.scale.setScalar(0.9);
+  minigunGroup.visible = false;
+
   /** Muzzle flash for rifle (at barrel tip) */
   const muzzleFlash = new THREE.Mesh(
     new THREE.SphereGeometry(0.08, 10, 10),
@@ -1993,6 +1724,9 @@ function createFirstPersonWeapon() {
     flamethrowerGroup,
     sniperGroup,
     rocketGroup,
+    smgGroup,
+    revolverGroup,
+    minigunGroup,
     muzzleFlash,
     sgMuzzleFlash,
   );
@@ -2085,6 +1819,9 @@ function createFirstPersonWeapon() {
     flamethrowerGroup,
     sniperGroup,
     rocketGroup,
+    smgGroup,
+    revolverGroup,
+    minigunGroup,
     get akHolder() {
       return akHolder;
     },
@@ -2335,18 +2072,10 @@ function createTeammate(x, z, index, akTemplate = null, remingtonTemplate = null
   };
 }
 
-function noise2D(x, z) {
-  const f = activeMapConfig.noiseFreq;
-  const n1 = Math.sin(x * 0.045 * f) * 5.2 + Math.cos(z * 0.046 * f) * 5.2;
-  const n2 = Math.sin((x + z) * 0.09 * f) * 1.8 + Math.cos((x - z) * 0.08 * f) * 1.5;
-  const n3 = Math.sin(x * 0.16 * f + z * 0.12 * f) * 0.8;
-  return n1 + n2 + n3;
-}
-
-function terrainHeight(x, z) {
-  if (activeMapConfig.flatTerrain) return 0;
-  return noise2D(x, z) * activeMapConfig.heightAmp;
-}
+// Thin wrappers around the pure helpers in ./world/terrain.js so the
+// implementation has one home but call sites don't have to thread mapConfig.
+function noise2D(x, z) { return terrainNoise2D(x, z, activeMapConfig.noiseFreq); }
+function terrainHeight(x, z) { return terrainHeightFn(x, z, activeMapConfig); }
 
 function getPlayerEyeHeight() {
   return isCrouching ? 1.1 : 1.8;
@@ -2390,16 +2119,7 @@ function preventUnexpectedSpawnTeleport() {
   }
 }
 
-const _terrainNormalVec = new THREE.Vector3();
-function terrainNormal(x, z) {
-  if (activeMapConfig.flatTerrain) return _terrainNormalVec.set(0, 1, 0);
-  const eps = 0.8;
-  const hL = terrainHeight(x - eps, z);
-  const hR = terrainHeight(x + eps, z);
-  const hD = terrainHeight(x, z - eps);
-  const hU = terrainHeight(x, z + eps);
-  return _terrainNormalVec.set(hL - hR, 2 * eps, hD - hU).normalize();
-}
+function terrainNormal(x, z) { return terrainNormalFn(x, z, activeMapConfig); }
 
 function makeTree(x, z) {
   const group = new THREE.Group();
@@ -2425,17 +2145,35 @@ function makeStructure(x, z) {
   const y = terrainHeight(x, z);
   group.position.set(x, y, z);
 
+  // Pick brick or concrete for the wall (50/50) — gives the world variety.
+  const useBrick = Math.random() < 0.5;
+  const wallPbr = useBrick ? brickPbr : concretePbr;
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(8 + Math.random() * 8, 4 + Math.random() * 3, 8 + Math.random() * 8),
-    new THREE.MeshStandardMaterial({ color: 0x5a5f66, roughness: 0.85 }),
+    new THREE.MeshStandardMaterial({
+      map: wallPbr.map,
+      normalMap: wallPbr.normalMap,
+      roughnessMap: wallPbr.roughnessMap,
+      color: useBrick ? 0xb89080 : 0x9a9c9f,
+      roughness: 1.0,
+      metalness: 0.05,
+    }),
   );
   base.position.y = base.geometry.parameters.height * 0.5;
   base.castShadow = true;
   base.receiveShadow = true;
 
+  // Roof — weathered wood planks (Polyhaven CC0).
   const roof = new THREE.Mesh(
     new THREE.ConeGeometry(base.geometry.parameters.width * 0.62, 2, 4),
-    new THREE.MeshStandardMaterial({ color: 0x3a2323, roughness: 0.92 }),
+    new THREE.MeshStandardMaterial({
+      map: woodPlanksPbr.map,
+      normalMap: woodPlanksPbr.normalMap,
+      roughnessMap: woodPlanksPbr.roughnessMap,
+      color: 0x6b4a2e,
+      roughness: 1.0,
+      metalness: 0.0,
+    }),
   );
   roof.position.y = base.position.y + base.geometry.parameters.height * 0.5 + 1.2;
   roof.rotation.y = Math.PI * 0.25;
@@ -2533,6 +2271,107 @@ function makeChunk(cx, cz) {
       registerStaticCollider(holder, 0.2, "cityBuilding");
     }
   }
+
+  // Drop GLB world props on top of the chunk (vehicles + survival clutter +
+  // street furniture). Only on the city map; other maps stay procedural.
+  if (activeMapConfig.id === "outbreak_city") {
+    placeMapProps(cx, cz);
+  }
+}
+
+/** Spawn a curated mix of GLB props on a city chunk: cars on the streets,
+ *  barrels/crates near building edges, lamps + cones for street furniture.
+ *  Each call schedules ~10 async spawns; spawnModel caches GLB templates so
+ *  only the FIRST chunk pays the load cost — every subsequent chunk reuses
+ *  the cached template. Spawns are skipped if a prop would collide with the
+ *  player spawn area (radius 18m around origin). */
+function placeMapProps(cx, cz) {
+  const vehicles = ["sedan", "suv", "police", "taxi", "van", "ambulance",
+                    "garbage_truck", "firetruck", "delivery_truck", "hatchback", "truck"];
+  const heavyProps = ["barrel", "barrel_open", "crate", "crate_large", "chest", "workbench"];
+  const barricades = ["fence", "fence_fortified", "fence_doorway", "road_barrier", "metal_panel"];
+  const decor = ["cone", "street_lamp", "street_lamp_curve", "highway_sign", "signpost",
+                 "road_light", "debris_tire", "debris_door", "debris_bumper",
+                 "campfire", "tent", "rock_a", "rock_b"];
+
+  const cellOriginX = cx * chunkSize;
+  const cellOriginZ = cz * chunkSize;
+  const half = chunkSize * 0.5;
+
+  // Vehicles — 2-3 per chunk, parked along streets at random rotations.
+  const vehicleCount = 2 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < vehicleCount; i += 1) {
+    const id = vehicles[Math.floor(Math.random() * vehicles.length)];
+    const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 8);
+    const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 8);
+    if (Math.hypot(x, z) < 18 || !isCircleClearOfStatics(x, z, 2.5)) continue;
+    spawnPropAt(id, x, z, Math.random() * Math.PI * 2);
+  }
+
+  // Heavy props — 3-5 per chunk.
+  const heavyCount = 3 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < heavyCount; i += 1) {
+    const id = heavyProps[Math.floor(Math.random() * heavyProps.length)];
+    const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 4);
+    const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 4);
+    if (Math.hypot(x, z) < 14 || !isCircleClearOfStatics(x, z, 1.5)) continue;
+    spawnPropAt(id, x, z, Math.random() * Math.PI * 2);
+  }
+
+  // Barricades — 1-2 per chunk (fences strewn around).
+  const barricadeCount = 1 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < barricadeCount; i += 1) {
+    const id = barricades[Math.floor(Math.random() * barricades.length)];
+    const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 4);
+    const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 4);
+    if (Math.hypot(x, z) < 14 || !isCircleClearOfStatics(x, z, 1.5)) continue;
+    spawnPropAt(id, x, z, Math.random() * Math.PI * 2);
+  }
+
+  // Decor — 4-6 per chunk (cones, lamps, debris). Cheap, no colliders for most.
+  const decorCount = 4 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < decorCount; i += 1) {
+    const id = decor[Math.floor(Math.random() * decor.length)];
+    const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 2);
+    const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 2);
+    if (Math.hypot(x, z) < 12 || !isCircleClearOfStatics(x, z, 1.0)) continue;
+    spawnPropAt(id, x, z, Math.random() * Math.PI * 2);
+  }
+
+  // Toxic barrels — ~30% chance per chunk, 1 barrel
+  if (Math.random() < 0.3) {
+    const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 6);
+    const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 6);
+    if (Math.hypot(x, z) >= 16 && isCircleClearOfStatics(x, z, 1.5)) {
+      spawnToxicBarrel(x, z);
+    }
+  }
+
+  // Loot crates — ~25% chance per chunk, 1 crate
+  if (Math.random() < 0.25) {
+    const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 6);
+    const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 6);
+    if (Math.hypot(x, z) >= 20 && isCircleClearOfStatics(x, z, 1.2)) {
+      spawnLootCrate(x, z);
+    }
+  }
+}
+
+/** Spawn a single GLB prop at world (x, z) using the registry. The prop is
+ *  added to cityPropGroups so it gets cleaned up when the chunk unloads, and
+ *  registered as a static collider if the registry entry has a collider. */
+function spawnPropAt(id, x, z, yaw) {
+  const y = terrainHeight(x, z);
+  spawnModel(id, scene, { x, y, z, yaw }).then((group) => {
+    if (!group) return;
+    cityPropGroups.push(group);
+    // Block sight + bullets on solid props (vehicles, barrels, fences).
+    const def = getModelDef(id);
+    if (def && def.collider) {
+      visionBlockers.push(group);
+      registerStaticCollider(group, def.collider.radius || 0.5, id);
+    }
+  }).catch(() => { /* swallow — file may be missing while user is iterating */ });
 }
 
 function ensureChunks() {
@@ -2776,6 +2615,7 @@ function resetWorldForNewMap() {
   molotovCount = 0;
   landMineCount = 0;
   spikeTrapCount = 0;
+  turretCount = 0;
   noiseMakerCount = 2;
   isNight = false;
   hordeNightActive = false;
@@ -2798,7 +2638,7 @@ function resetWorldForNewMap() {
   arrows.length = 0;
   for (const r of rockets) { scene.remove(r.mesh); r.mesh.traverse(o => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } }); }
   rockets.length = 0;
-  for (const f of flamePuffs) { scene.remove(f.mesh); f.mesh.geometry?.dispose(); f.mesh.material?.dispose(); }
+  for (const f of flamePuffs) { scene.remove(f.mesh); _returnFlamePuffMat(f.mesh.material); }
   flamePuffs.length = 0;
   for (const mp of molotovProjectiles) { scene.remove(mp.mesh); disposeOwnedObject3D(mp.mesh); }
   molotovProjectiles.length = 0;
@@ -2808,12 +2648,26 @@ function resetWorldForNewMap() {
   landMines.length = 0;
   for (const s of spikeTraps) { scene.remove(s.mesh); disposeOwnedObject3D(s.mesh); }
   spikeTraps.length = 0;
+  for (const t of turrets) { scene.remove(t.mesh); t.mesh.traverse((o) => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } }); }
+  turrets.length = 0;
+  for (const b of toxicBarrels) { scene.remove(b.mesh); b.mesh.traverse((o) => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } }); }
+  toxicBarrels.length = 0;
+  for (const c of toxicClouds) { scene.remove(c.mesh); scene.remove(c.light); c.mesh.geometry?.dispose(); c.mesh.material?.dispose(); c.light?.dispose(); }
+  toxicClouds.length = 0;
+  for (const l of lootCrates) { scene.remove(l.mesh); l.mesh.traverse((o) => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } }); }
+  lootCrates.length = 0;
+  _lootCratePromptShown = false;
   for (const p of particles) {
     scene.remove(p.mesh);
     p.mesh.geometry?.dispose();
     p.mesh.material?.dispose();
   }
   particles.length = 0;
+  for (const d of bloodDecals) {
+    scene.remove(d.mesh);
+    d.mesh.material.dispose();
+  }
+  bloodDecals.length = 0;
   for (const b of barrels) {
     scene.remove(b.mesh);
     disposeObject3D(b.mesh);
@@ -2825,13 +2679,24 @@ function resetWorldForNewMap() {
     a.mesh.material?.dispose();
   }
   acidPuddles.length = 0;
+  for (const ap of acidProjectiles) {
+    scene.remove(ap.mesh);
+  }
+  acidProjectiles.length = 0;
   for (const c of zombieCorpses) {
     scene.remove(c.mesh);
     disposeObject3D(c.mesh);
   }
   zombieCorpses.length = 0;
+  for (const dc of deathCollapses) {
+    scene.remove(dc.mesh);
+    disposeObject3D(dc.mesh);
+  }
+  deathCollapses.length = 0;
   for (const d of distractions) { d.active = false; scene.remove(d.mesh); disposeObject3D(d.mesh); }
   distractions.length = 0;
+  flyingDistractions.length = 0;
+  _supplyDropTimer = 0;
   for (const s of supplyDrops) {
     scene.remove(s.mesh);
     disposeObject3D(s.mesh);
@@ -2886,6 +2751,14 @@ function resetWorldForNewMap() {
     zone.mesh.material?.dispose();
   }
   eventDirector.toxicZones = [];
+  // New event state — tide / broadcast / camp.
+  eventDirector.tideActive = false;
+  eventDirector.tideTimer = 0;
+  eventDirector.tideAngle = 0;
+  eventDirector.tideSpawnAccumulator = 0;
+  eventDirector.broadcastActive = false;
+  eventDirector.broadcastTimer = 0;
+  if (eventDirector.campActive) clearCamp(eventDirector, scene);
 
   // Reset mission generator state
   missionGenerator.activeMissions = [];
@@ -2907,188 +2780,37 @@ function resetWorldForNewMap() {
 
 function addZombie(x, z, forceType = null) {
   if (zombies.length >= settings.maxZombies) return null;
-  const roll = Math.random();
-  // Special infected chance increases with wave; new types appear from wave 3+
-  const specialChance = Math.min(0.30, wave * 0.025);
-  const newTypeChance = wave >= 3 ? Math.min(0.12, (wave - 2) * 0.015) : 0;
-  let type = forceType;
+  const type = forceType || rollZombieType(wave);
+  const isSpecial = SPECIAL_INFECTED_TYPES.includes(type);
 
-  if (!type) {
-    if (roll < 0.10) type = "brute";
-    else if (roll < 0.28) type = "runner";
-    else if (roll < 0.36) type = "crawler";
-    else if (roll < 0.36 + specialChance) {
-      const specialRoll = Math.random();
-      if (specialRoll < 0.25) type = "spitter";
-      else if (specialRoll < 0.50) type = "hunter";
-      else if (specialRoll < 0.75) type = "charger";
-      else if (wave >= 3 && specialRoll < 0.85) {
-        const newRoll = Math.random();
-        if (newRoll < 0.33) type = "juggernaut";
-        else if (newRoll < 0.66) type = "boomer";
-        else type = "screamer";
-      } else type = "charger";
-    } else if (roll < 0.36 + specialChance + newTypeChance) {
-      const newRoll = Math.random();
-      if (newRoll < 0.33) type = "juggernaut";
-      else if (newRoll < 0.66) type = "boomer";
-      else type = "screamer";
-    } else type = "walker";
-  }
-
-  const group = new THREE.Group();
-  const isSpecial = ["spitter", "hunter", "charger", "juggernaut", "boomer", "screamer"].includes(type);
-
-  // Special infected materials (shared to prevent per-instance leaks)
-  let skinMat = zombieSkinMaterial;
-  let clothMat = zombieClothMaterial;
-  if (type === "spitter") { clothMat = spitterClothMat; skinMat = spitterSkinMat; }
-  else if (type === "hunter") { clothMat = hunterClothMat; skinMat = hunterSkinMat; }
-  else if (type === "charger") { clothMat = chargerClothMat; skinMat = chargerSkinMat; }
-  else if (type === "juggernaut") { clothMat = juggernautClothMat; skinMat = juggernautSkinMat; }
-  else if (type === "boomer") { clothMat = boomerClothMat; skinMat = boomerSkinMat; }
-  else if (type === "screamer") { clothMat = screamerClothMat; skinMat = screamerSkinMat; }
-
-  // Reuse shared geometries by scaling meshes instead of creating new BoxGeometry/SphereGeometry per zombie
-  const hips = new THREE.Mesh(gBox1x1x1, clothMat);
-  hips.scale.set(0.78, 0.56, 0.42);
-  const torso = new THREE.Mesh(gBox1x1x1, clothMat);
-  torso.scale.set(0.9, 0.9, 0.48);
-  const head = new THREE.Mesh(gSphere1, skinMat);
-  head.scale.set(0.3, 0.3, 0.3);
-  const jaw = new THREE.Mesh(gBox1x1x1, zombieBloodMaterial);
-  jaw.scale.set(0.28, 0.12, 0.24);
-  const leftArm = new THREE.Mesh(gBox1x1x1, skinMat);
-  leftArm.scale.set(0.22, 0.86, 0.22);
-  const rightArm = new THREE.Mesh(gBox1x1x1, skinMat);
-  rightArm.scale.set(0.22, 0.86, 0.22);
-  const leftLeg = new THREE.Mesh(gBox1x1x1, clothMat);
-  leftLeg.scale.set(0.24, 0.96, 0.24);
-  const rightLeg = new THREE.Mesh(gBox1x1x1, clothMat);
-  rightLeg.scale.set(0.24, 0.96, 0.24);
-
-  // Charger has one massive arm
-  if (type === "charger") {
-    rightArm.scale.set(0.396, 1.118, 0.308);
-    rightArm.position.x = 0.7;
-  }
-
-  torso.position.set(0, 1.48, 0);
-  hips.position.set(0, 1.0, 0);
-  head.position.set(0, 2.14, 0.02);
-  jaw.position.set(0, 1.93, 0.2);
-  leftArm.position.set(-0.56, 1.47, 0);
-  rightArm.position.set(0.56, 1.47, 0);
-  leftLeg.position.set(-0.23, 0.45, 0);
-  rightLeg.position.set(0.23, 0.45, 0);
-
-  const eyeMat = eyeMaterials[type] || eyeMaterials.walker;
-  const eyeLeft = new THREE.Mesh(gSphereLow, eyeMat);
-  eyeLeft.scale.set(0.04, 0.04, 0.04);
-  const eyeRight = new THREE.Mesh(gSphereLow, eyeMat);
-  eyeRight.scale.set(0.04, 0.04, 0.04);
-  eyeLeft.position.set(-0.1, 2.2, 0.26);
-  eyeRight.position.set(0.1, 2.2, 0.26);
-
-  // Spitter has acid sac on back
-  if (type === "spitter") {
-    const acidSac = new THREE.Mesh(gSphere1, acidSacMat);
-    acidSac.scale.set(0.45, 0.45, 0.45);
-    acidSac.position.set(0, 1.8, -0.35);
-    group.add(acidSac);
-  }
-
-  // Juggernaut has metal armor plates
-  if (type === "juggernaut") {
-    const chestPlate = new THREE.Mesh(gBox1x1x1, juggernautArmorMat);
-    chestPlate.scale.set(0.94, 0.72, 0.52);
-    chestPlate.position.set(0, 1.48, 0.04);
-    const shoulderL = new THREE.Mesh(gSphere1, juggernautArmorMat);
-    shoulderL.scale.set(0.18, 0.18, 0.18);
-    shoulderL.position.set(-0.62, 1.82, 0);
-    const shoulderR = new THREE.Mesh(gSphere1, juggernautArmorMat);
-    shoulderR.scale.set(0.18, 0.18, 0.18);
-    shoulderR.position.set(0.62, 1.82, 0);
-    group.add(chestPlate, shoulderL, shoulderR);
-  }
-
-  // Boomer has a bloated stomach sac
-  if (type === "boomer") {
-    const bloat = new THREE.Mesh(gSphere1, boomerBloatMat);
-    bloat.scale.set(0.52, 0.48, 0.44);
-    bloat.position.set(0, 1.42, 0.18);
-    group.add(bloat);
-  }
-
-  // Screamer has enlarged jaw / mouth
-  if (type === "screamer") {
-    jaw.scale.set(0.38, 0.18, 0.30);
-    jaw.position.set(0, 1.88, 0.28);
-    const throat = new THREE.Mesh(gSphere1, screamerSkinMat);
-    throat.scale.set(0.18, 0.22, 0.18);
-    throat.position.set(0, 1.72, 0.06);
-    group.add(throat);
-  }
-
-  group.add(hips, torso, head, jaw, leftArm, rightArm, leftLeg, rightLeg, eyeLeft, eyeRight);
-  group.position.set(x, terrainHeight(x, z), z);
-
-  // Scaling
-  if (type === "brute") group.scale.setScalar(1.25);
-  if (type === "runner") group.scale.set(0.92, 0.92, 0.92);
-  if (type === "charger") group.scale.set(1.15, 1.1, 1.15);
-  if (type === "hunter") group.scale.set(0.88, 0.95, 0.88);
-  if (type === "crawler") {
-    group.scale.set(0.95, 0.55, 0.95);
-    group.position.y = terrainHeight(x, z);
-  }
-  if (type === "juggernaut") group.scale.setScalar(1.45);
-  if (type === "boomer") group.scale.set(1.05, 1.15, 1.05);
-  if (type === "screamer") group.scale.set(0.92, 1.02, 0.92);
-
-  group.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) obj.castShadow = true;
+  // Build the visual mesh (delegated to ./entities/zombie.js).
+  const y = terrainHeight(x, z);
+  const { group, leftArm, rightArm, leftLeg, rightLeg } = buildZombieMesh({
+    type, x, y, z, assets: zombieAssets,
   });
   scene.add(group);
 
-  // Stats for each type
-  let hp = 60, maxHp = 60, speed = settings.zombieSpeed, damage = settings.zombieDamage;
-  if (type === "brute") { hp = 120; maxHp = 120; speed = settings.bruteSpeed; damage = 15; }
-  else if (type === "runner") { hp = 36; maxHp = 36; speed = settings.runnerSpeed; damage = 5; }
-  else if (type === "crawler") { hp = 40; maxHp = 40; speed = settings.zombieSpeed * 0.6; damage = 10; }
-  else if (type === "spitter") { hp = 45; maxHp = 45; speed = settings.zombieSpeed * 0.85; damage = 4; }
-  else if (type === "hunter") { hp = 38; maxHp = 38; speed = settings.runnerSpeed * 1.3; damage = 12; }
-  else if (type === "charger") { hp = 95; maxHp = 95; speed = settings.zombieSpeed * 1.15; damage = 18; }
-  else if (type === "juggernaut") { hp = 300; maxHp = 300; speed = settings.zombieSpeed * 0.4; damage = 22; }
-  else if (type === "boomer") { hp = 60; maxHp = 60; speed = settings.zombieSpeed * 0.7; damage = 6; }
-  else if (type === "screamer") { hp = 40; maxHp = 40; speed = settings.zombieSpeed * 1.2; damage = 3; }
-
-  // Wave-based HP scaling: +8% per wave after wave 3
-  if (wave > 3) {
-    const hpMult = 1 + (wave - 3) * 0.08;
-    hp = Math.round(hp * hpMult);
-    maxHp = hp;
-  }
+  // Stats — start from per-type baseline, then apply wave HP scaling.
+  const base = zombieStatsForType(type, settings);
+  let hp = base.hp;
+  if (wave > 3) hp = Math.round(hp * (1 + (wave - 3) * 0.08));
+  const maxHp = hp;
 
   zombies.push({
     mesh: group,
-    leftArm,
-    rightArm,
-    leftLeg,
-    rightLeg,
+    leftArm, rightArm, leftLeg, rightLeg,
     type,
-    hp,
-    maxHp,
-    speed,
-    damage,
-    baseSpeed: speed,
-    baseDamage: damage,
+    hp, maxHp,
+    speed: base.speed,
+    damage: base.damage,
+    baseSpeed: base.speed,
+    baseDamage: base.damage,
     walkPhase: Math.random() * Math.PI * 2,
     attackTimer: 0,
     wanderSeed: Math.random() * 1000,
     isBoss: false,
     isSpecial,
-    // Special infected abilities
+    // Special infected ability cooldowns
     spitterCooldown: type === "spitter" ? 3 + Math.random() * 2 : 0,
     hunterCooldown: type === "hunter" ? 4 + Math.random() * 3 : 0,
     hunterLeaping: false,
@@ -3098,14 +2820,14 @@ function addZombie(x, z, forceType = null) {
     chargeDirection: new THREE.Vector3(),
     attackAnimating: false,
     attackAnimTime: 0,
-    // New infected abilities
     screamCooldown: type === "screamer" ? 6 + Math.random() * 4 : 0,
     hasScreamed: false,
-    isFleeing: type === "screamer" ? true : false,
+    isFleeing: type === "screamer",
     ignoreBarricades: type === "juggernaut",
     boomerExploded: false,
     leapTime: 0,
     leapVelocity: new THREE.Vector3(),
+    growlCooldown: 2 + Math.random() * 6, // stagger initial growl timings
   });
   return zombies[zombies.length - 1];
 }
@@ -3464,6 +3186,17 @@ function shoot() {
   else if (wn === "Flamethrower") playSfx("gunshot_player", 0.5);
   else if (wn === "Rocket") playSfx("grenade_throw", 0.7);
   else playSfx(isShotgunNow ? "shotgun_player" : "gunshot_player", 1);
+
+  // Sound investigation — nearby zombies investigate the gunshot.
+  // Suppressor and silent weapons reduce or eliminate the alert radius.
+  const isSuppressed = (weapon.upgrades?.suppressor || 0) > 0;
+  let noiseKind = isShotgunNow ? "shotgun" : "gunshot";
+  if (wn === "Crossbow") noiseKind = null;            // crossbow is silent
+  else if (wn === "Rocket") noiseKind = "rocket";
+  else if (isSuppressed) noiseKind = "gunshot_suppressed";
+  if (noiseKind) {
+    emitSoundEvent(distractions, player.position, noiseKind, 2.0);
+  }
   player.shootCooldown = weapon.fireDelay;
   player.bobTime += 0.03;
   camera.fov = 77.5;
@@ -3479,6 +3212,9 @@ function shoot() {
     firstPersonWeapon.muzzleFlash.material.opacity = 0.95;
     firstPersonWeapon.muzzleFlash.scale.setScalar(1 + Math.random() * 1.2);
   }
+
+  // Muzzle flash dynamic light — brief point light for 1-2 frames of scene illumination
+  flashMuzzleLight();
 
   // Shell ejection effect
   ejectShell(weapon.name);
@@ -3606,20 +3342,38 @@ function updateWeapon(dt) {
   const isFlamethrower = weaponName === "Flamethrower";
   const isSniper = weaponName === "Sniper";
   const isRocket = weaponName === "Rocket";
+  const isSmg = weaponName === "SMG";
+  const isRevolver = weaponName === "Revolver";
+  const isMinigun = weaponName === "Minigun";
 
   const adsXOffset = isADS ? 0.0 : (isPistol ? 0.4 : isShotgun ? 0.34 : 0.36);
   const adsYOffset = isADS ? -0.2 : (isPistol ? -0.26 : isShotgun ? -0.24 : -0.28);
   const adsZOffset = isADS ? -0.38 : (isPistol ? -0.48 : isShotgun ? -0.5 : -0.55);
+  // Reload weapon dip: lower and tilt the model during magazine swap
+  let reloadDipY = 0;
+  let reloadDipZ = 0;
+  let reloadTiltZ = 0;
+  if (player.reloadTimer > 0) {
+    const weapon = getActiveWeapon(player);
+    const reloadTotal = (weapon.reloadTime || 1.25) * (1 - (skills?.reloadSpeed?.value || 0));
+    // 0→1→0 ease: peaks at mid-reload then returns
+    const t = 1 - player.reloadTimer / reloadTotal;
+    const dipCurve = Math.sin(t * Math.PI); // smooth bell curve
+    reloadDipY = -0.18 * dipCurve;
+    reloadDipZ = 0.06 * dipCurve;
+    reloadTiltZ = 0.12 * dipCurve;
+  }
+
   firstPersonWeapon.weapon.position.set(
     adsXOffset + bobX - lookSwayX * 0.0014,
-    adsYOffset - bobY + weaponKick * 0.03 + lookSwayY * 0.0012,
-    adsZOffset + weaponKick * 0.11,
+    adsYOffset - bobY + weaponKick * 0.03 + lookSwayY * 0.0012 + reloadDipY,
+    adsZOffset + weaponKick * 0.11 + reloadDipZ,
   );
 
   firstPersonWeapon.weapon.rotation.set(
     (isPistol ? -0.1 : -0.12) - weaponRecoil * 0.12 + lookSwayY * 0.0009,
     (isPistol ? -0.05 : -0.1) + lookSwayX * 0.0011,
-    -0.04 + bobX * 0.9,
+    -0.04 + bobX * 0.9 + reloadTiltZ,
   );
   firstPersonWeapon.weapon.scale.setScalar(isPistol ? 0.8 : 1);
 
@@ -3646,6 +3400,9 @@ function updateWeapon(dt) {
   if (firstPersonWeapon.flamethrowerGroup) firstPersonWeapon.flamethrowerGroup.visible = isFlamethrower;
   if (firstPersonWeapon.sniperGroup) firstPersonWeapon.sniperGroup.visible = isSniper;
   if (firstPersonWeapon.rocketGroup) firstPersonWeapon.rocketGroup.visible = isRocket;
+  if (firstPersonWeapon.smgGroup) firstPersonWeapon.smgGroup.visible = isSmg;
+  if (firstPersonWeapon.revolverGroup) firstPersonWeapon.revolverGroup.visible = isRevolver;
+  if (firstPersonWeapon.minigunGroup) firstPersonWeapon.minigunGroup.visible = isMinigun;
 
   if (isPistol) {
     firstPersonWeapon.muzzleFlash.position.set(0, 0, -0.56);
@@ -3657,6 +3414,12 @@ function updateWeapon(dt) {
     firstPersonWeapon.muzzleFlash.position.set(0, 0.02, -1.42);
   } else if (isRocket) {
     firstPersonWeapon.muzzleFlash.position.set(0, 0, -1.08);
+  } else if (isSmg) {
+    firstPersonWeapon.muzzleFlash.position.set(0, 0.01, -0.66);
+  } else if (isRevolver) {
+    firstPersonWeapon.muzzleFlash.position.set(0, 0.01, -0.32);
+  } else if (isMinigun) {
+    firstPersonWeapon.muzzleFlash.position.set(0, 0.01, -0.6);
   } else if (!isShotgun) {
     firstPersonWeapon.muzzleFlash.position.set(0, 0, -1.35);
   }
@@ -3768,7 +3531,22 @@ function updateBullets(dt) {
       continue;
     }
 
+    // Terrain impact — bullet hit the ground
+    const groundY = terrainHeight(bullet.mesh.position.x, bullet.mesh.position.z);
+    if (bullet.mesh.position.y <= groundY + 0.05) {
+      spawnSparks(bullet.mesh.position, 4);
+      spawnTerrainImpactDust(bullet.mesh.position);
+      releaseBulletRecord(bullet);
+      bullets.splice(i, 1);
+      continue;
+    }
+
     if (bullet.owner === "player" && checkBarrelHits(_bulletPrev, bullet.mesh.position)) {
+      releaseBulletRecord(bullet);
+      bullets.splice(i, 1);
+      continue;
+    }
+    if (bullet.owner === "player" && checkToxicBarrelHits(_bulletPrev, bullet.mesh.position, bullet.damage || 24)) {
       releaseBulletRecord(bullet);
       bullets.splice(i, 1);
       continue;
@@ -3798,7 +3576,8 @@ function updateBullets(dt) {
             triggerHitStop(0.045);
           }
           if (zombieSurvived && bullet.crit) {
-            spawnFloatingDamage(zombie.mesh.position.clone().add(new THREE.Vector3(0, 2.8, 0)), bullet.damage, true);
+            // Reuse scratch vector — this fires every crit hit, can be many per second.
+            spawnFloatingDamage(_tempVec1.copy(zombie.mesh.position).setY(zombie.mesh.position.y + 2.8), bullet.damage, true);
             addScreenShake(0.05);
           }
           if (hs) score += 10;
@@ -3842,6 +3621,8 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
   if (zombie.hp <= 0) {
     const pos = zombie.mesh.position.clone();
     const wasBoss = zombie.isBoss;
+    const bossName = zombie.bossName;
+    const bossRewardMult = zombie.bossRewardMult || 1;
     const zombieType = zombie.type;
     const isSpecial = ["spitter", "hunter", "charger", "juggernaut", "boomer", "screamer"].includes(zombieType);
     if (wasBoss) {
@@ -3874,10 +3655,24 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
       alertTimer = 2;
     }
 
-    scene.remove(zombie.mesh);
-    disposeObject3D(zombie.mesh);
+    // Dispose cloned burn materials before collapse so they don't leak.
+    if (zombie._burnTinted && zombie._burnOrigMats) {
+      for (const entry of zombie._burnOrigMats) {
+        if (entry.mesh.material && entry.mesh.material !== entry.mat) {
+          entry.mesh.material.dispose();
+        }
+        entry.mesh.material = entry.mat;
+      }
+      zombie._burnOrigMats = null;
+      zombie._burnTinted = false;
+    }
+    // Death collapse: instead of vanishing instantly, the zombie tips over.
+    // We push it into a short-lived collapse list; the mesh is removed after
+    // the animation completes (see updateDeathCollapses).
+    startDeathCollapse(zombie.mesh);
     zombies.splice(index, 1);
     player.kills += 1;
+    onZombieKilled(missionGenerator, zombieType);
     playSpatialSfx("zombie_death", pos, 1);
     maybeDropPickup(pos);
     if (!wasBoss && Math.random() < 0.45) spawnMaterialDrop(pos);
@@ -3891,19 +3686,24 @@ function applyZombieDamage(index, damageAmount, isHeadshot = false, isMelee = fa
       alertTimer = 2.5;
     }
     spawnBloodParticles(pos, 14);
+    // Persistent splat on the ground — bigger for special infected and bosses.
+    spawnBloodDecal(pos.x, pos.z, wasBoss ? 2.4 : isSpecial ? 1.4 : 1.0, wasBoss ? 60 : 28);
 
     // Skill XP gain
     addSkillXP(wasBoss ? 50 : zombieType === "juggernaut" ? 40 : zombieType === "boomer" ? 20 : zombieType === "screamer" ? 15 : isSpecial ? 25 : 10);
 
     if (wasBoss) {
       bossAlive = false;
-      score += 500;
-      topCenterAlertEl.textContent = "★ BOSS DEFEATED! +500 pts";
+      const reward = Math.round(500 * bossRewardMult);
+      score += reward;
+      topCenterAlertEl.textContent = `★ ${(bossName || "BOSS").toUpperCase()} DEFEATED! +${reward} pts`;
       alertTimer = 3.5;
       grenadeCount = Math.min(grenadeCount + 2, 6);
       skillPoints += 2;
-      messageEl.textContent = "Boss down! +2 grenades, +2 skill points!";
-      addKillFeedEntry("💀 BOSS DOWN +500pts", "#ff6600");
+      messageEl.textContent = `${bossName || "Boss"} down! +2 grenades, +2 skill points!`;
+      addKillFeedEntry(`💀 ${(bossName || "BOSS").toUpperCase()} DOWN +${reward}pts`, "#ff6600");
+      // Always drop a chunk of materials on boss kill.
+      for (let m = 0; m < 4; m++) spawnMaterialDrop(pos);
     } else {
       score += isHeadshot ? 150 : 50;
       const label = isHeadshot ? `💀 ${zombieType} HEADSHOT! +150` : `💀 ${zombieType} +50`;
@@ -4051,6 +3851,7 @@ function updateTeammates(dt) {
   for (const mate of teammates) {
     mate.shootCooldown = Math.max(0, mate.shootCooldown - dt);
     mate.targetMemory = Math.max(0, mate.targetMemory - dt);
+    if (mate.calloutCooldown) mate.calloutCooldown = Math.max(0, mate.calloutCooldown - dt);
     if (mate.reloadTimer > 0) {
       mate.reloadTimer -= dt;
       if (mate.reloadTimer <= 0) {
@@ -4062,7 +3863,7 @@ function updateTeammates(dt) {
       }
     }
 
-    // Downed teammate logic
+    // Downed teammate logic — player OR another teammate may revive.
     if (mate.downed) {
       mate.downedTimer -= dt;
       if (mate.downedTimer <= 0) {
@@ -4074,9 +3875,27 @@ function updateTeammates(dt) {
         messageEl.textContent = "A teammate didn't make it...";
         continue;
       }
-      // Check if player is close enough to revive
+
+      // Player revive (F key when within 2.5m)
       const distToPlayer = mate.mesh.position.distanceTo(player.position);
-      if (!activeVehicle && distToPlayer < 2.5 && keys.has("KeyF")) {
+      const playerReviving = !activeVehicle && distToPlayer < 2.5 && keys.has("KeyF");
+
+      // Teammate AI revive — closest non-downed teammate within 2m and
+      // not in active combat (no current target) will start a revive.
+      let mateReviving = false;
+      if (!playerReviving) {
+        for (const other of teammates) {
+          if (other === mate || other.downed) continue;
+          if (other.mesh.position.distanceToSquared(mate.mesh.position) < 4) {
+            // 2m radius. Buddy gets stuck reviving until done.
+            other.reviving = mate;
+            mateReviving = true;
+            break;
+          }
+        }
+      }
+
+      if (playerReviving || mateReviving) {
         mate.beingRevived = true;
         mate.reviveTimer += dt;
         if (mate.reviveTimer >= 3) {
@@ -4088,9 +3907,11 @@ function updateTeammates(dt) {
           mate.beingRevived = false;
           mate.mesh.rotation.x = 0;
           mate.mesh.position.y = terrainHeight(mate.mesh.position.x, mate.mesh.position.z);
-          messageEl.textContent = "Teammate revived!";
-          addKillFeedEntry("Teammate revived!", "#44ff88");
+          messageEl.textContent = playerReviving ? "Teammate revived!" : "Teammates revived a buddy!";
+          addKillFeedEntry(playerReviving ? "Teammate revived!" : "Buddy revived a teammate!", "#44ff88");
           playSfx("skill_up", 0.6);
+          // Clear revive lock on whoever was reviving.
+          for (const other of teammates) if (other.reviving === mate) other.reviving = null;
         }
       } else {
         mate.beingRevived = false;
@@ -4100,6 +3921,24 @@ function updateTeammates(dt) {
       mate.mesh.rotation.x = Math.PI / 2 * 0.65;
       mate.mesh.position.y = terrainHeight(mate.mesh.position.x, mate.mesh.position.z) + 0.3;
       continue; // Skip normal behavior when downed
+    }
+
+    // If this teammate is currently reviving someone, plant feet & don't shoot.
+    if (mate.reviving) {
+      // If the patient died/revived, drop the lock.
+      if (!mate.reviving.downed) mate.reviving = null;
+      else {
+        const r = mate.reviving;
+        // Kneel-ish posture: don't move, don't aim.
+        mate.currentTarget = null;
+        mate.targetMemory = 0;
+        // Face the patient so the animation reads.
+        const dx = r.mesh.position.x - mate.mesh.position.x;
+        const dz = r.mesh.position.z - mate.mesh.position.z;
+        if (dx * dx + dz * dz > 0.01) mate.mesh.rotation.y = Math.atan2(dx, dz);
+        mate.mesh.position.y = terrainHeight(mate.mesh.position.x, mate.mesh.position.z);
+        continue;
+      }
     }
 
     mate.mesh.rotation.x *= Math.exp(-dt * 10);
@@ -4129,6 +3968,16 @@ function updateTeammates(dt) {
     }
 
     if (visibleTarget) {
+      // Callout: first time this teammate sees a special infected or boss,
+      // push a kill-feed line so the player knows where attention is going.
+      const isBig = visibleTarget.isBoss || visibleTarget.isSpecial;
+      if (isBig && mate.currentTarget !== visibleTarget && (mate.calloutCooldown || 0) <= 0) {
+        const label = visibleTarget.isBoss
+          ? `🎯 "${visibleTarget.bossName || "Boss"} spotted!"`
+          : `🎯 "${visibleTarget.type} on us!"`;
+        addKillFeedEntry(label, "#88ccff");
+        mate.calloutCooldown = 6; // Don't spam the kill feed.
+      }
       mate.currentTarget = visibleTarget;
       mate.targetMemory = 1.15;
       mate.lastKnownTargetPosition.copy(visibleTarget.mesh.position);
@@ -4284,6 +4133,9 @@ const _zombieAcidOrigin   = new THREE.Vector3();
 const _zombieAcidTarget   = new THREE.Vector3();
 
 function updateZombies(dt) {
+  // Expire short-lived sound events (gunshot/explosion alerts).
+  pruneSoundEvents(distractions, dt);
+
   // Update acid / fire puddles
   for (let ai = acidPuddles.length - 1; ai >= 0; ai--) {
     const puddle = acidPuddles[ai];
@@ -4324,6 +4176,35 @@ function updateZombies(dt) {
       zombie.burnTimer = Math.max(0, zombie.burnTimer - dt);
       applyZombieDamage(i, (zombie.burnDps || 0) * dt);
       if (!zombies[i]) continue;
+      // Visual fire effect — spawn small fire particles while burning
+      zombie._burnVfxTimer = (zombie._burnVfxTimer || 0) - dt;
+      if (zombie._burnVfxTimer <= 0) {
+        zombie._burnVfxTimer = 0.08 + Math.random() * 0.06;
+        spawnBurningParticle(zombie.mesh.position);
+      }
+      // Tint the zombie mesh orange-red while on fire (clone material to avoid shared mutation)
+      if (!zombie._burnTinted) {
+        zombie._burnTinted = true;
+        zombie._burnOrigMats = [];
+        zombie.mesh.traverse((o) => {
+          if (o.isMesh && o.material) {
+            zombie._burnOrigMats.push({ mesh: o, mat: o.material });
+            o.material = o.material.clone();
+            o.material.emissive = new THREE.Color(0xff4400);
+            o.material.emissiveIntensity = 0.35;
+          }
+        });
+      }
+    } else if (zombie._burnTinted) {
+      // Restore original shared material and dispose cloned copy
+      zombie._burnTinted = false;
+      if (zombie._burnOrigMats) {
+        for (const entry of zombie._burnOrigMats) {
+          if (entry.mesh.material) entry.mesh.material.dispose();
+          entry.mesh.material = entry.mat;
+        }
+        zombie._burnOrigMats = null;
+      }
     }
     if (zombie.bleedTimer > 0) {
       zombie.bleedTimer = Math.max(0, zombie.bleedTimer - dt);
@@ -4345,16 +4226,17 @@ function updateZombies(dt) {
       targetKind = activeVehicle ? "vehicle" : "player";
     }
 
-    // Check for distractions
+    // Check for distractions (noise makers, beepers, gunshots, explosions).
+    // Sound events use their own radius; physical distractions use a default of 60.
     for (const dist of distractions) {
-      if (dist.active && dist.position) {
-        const d2 = zombie.mesh.position.distanceToSquared(dist.position);
-        if (d2 < nearestDistanceSq && d2 < 60 * 60) {
-          nearestDistanceSq = d2;
-          _zombieTargetPos.copy(dist.position);
-          targetKind = "distraction";
-          targetMate = null;
-        }
+      if (!dist.active || !dist.position) continue;
+      const radius = dist.isSound ? dist.soundRadius : 60;
+      const d2 = zombie.mesh.position.distanceToSquared(dist.position);
+      if (d2 < nearestDistanceSq && d2 < radius * radius) {
+        nearestDistanceSq = d2;
+        _zombieTargetPos.copy(dist.position);
+        targetKind = "distraction";
+        targetMate = null;
       }
     }
 
@@ -4388,13 +4270,25 @@ function updateZombies(dt) {
         zombie.mesh.position.y,
         zombie.mesh.position.z + Math.cos(gameTime * 0.55 + zombie.wanderSeed) * 5,
       );
+    } else if (targetKind === "player" || targetKind === "teammate" || targetKind === "vehicle" || targetKind === "survivor") {
+      // Apply flanking offset so packs don't all converge on a single point.
+      // Only when the zombie is far enough away that lateral motion still helps;
+      // up close we want them to commit to the kill.
+      const distSq = nearestDistanceSq;
+      if (distSq > 64) { // > 8 units
+        const { ox, oz } = flankOffset(zombie, _zombieTargetPos, zombies.length);
+        _zombieTargetPos.x += ox;
+        _zombieTargetPos.z += oz;
+      }
     }
 
     const toTarget = getV3().subVectors(_zombieTargetPos, zombie.mesh.position);
     toTarget.y = 0;
     const distance = toTarget.length();
 
-    const nightSpeedMult = ((isNight || hordeNightActive) ? 1.45 : 1.0) * (zombie.staggerTimer > 0 ? 0.35 : 1.0);
+    const toxicSlow = zombie._toxicSlow || 1.0;
+    zombie._toxicSlow = 1.0; // reset each tick; reapplied by updateToxicClouds if still inside
+    const nightSpeedMult = ((isNight || hordeNightActive) ? 1.45 : 1.0) * (zombie.staggerTimer > 0 ? 0.35 : 1.0) * toxicSlow;
 
     // Special infected behaviors
     if (zombie.type === "spitter") {
@@ -4442,6 +4336,7 @@ function updateZombies(dt) {
           player.hp = Math.max(0, player.hp - 18);
           player.damageFlash = 0.9;
           lastDamageTime = gameTime;
+          showDamageDirection(zombie.mesh.position);
           addScreenShake(0.4);
           triggerHitStop(0.05);
           messageEl.textContent = "HUNTER POUNCED!";
@@ -4467,6 +4362,7 @@ function updateZombies(dt) {
           player.hp = Math.max(0, player.hp - zombie.damage * 2);
           player.damageFlash = 0.9;
           lastDamageTime = gameTime;
+          showDamageDirection(zombie.mesh.position);
           addScreenShake(0.6);
           triggerHitStop(0.075);
           // Knockback
@@ -4602,6 +4498,15 @@ function updateZombies(dt) {
       zombie.rightLeg.rotation.x = baseRightLeg;
     }
 
+    // Proximity growl — adds atmosphere. Each zombie growls on its own cooldown
+    // so the soundscape doesn't sync into a single burst every N seconds.
+    zombie.growlCooldown -= dt;
+    if (zombie.growlCooldown <= 0 && distance < 22 && distance > 1.5) {
+      zombie.growlCooldown = 3.5 + Math.random() * 5;
+      const vol = Math.max(0.08, 0.45 - distance * 0.018);
+      playSpatialSfx("zombie_growl", zombie.mesh.position, vol);
+    }
+
     const attackDistance = zombie.type === "brute" ? 1.45 : settings.zombieHitDistance;
     const effectiveAttackDistance = targetKind === "vehicle" ? 2.4 : attackDistance;
     if (!gameOver && distance < effectiveAttackDistance && zombie.attackTimer <= 0 && !zombie.hunterLeaping && !zombie.isCharging) {
@@ -4612,8 +4517,9 @@ function updateZombies(dt) {
         player.hp = Math.max(0, player.hp - zombie.damage);
         player.damageFlash = 0.9;
         lastDamageTime = gameTime;
+        showDamageDirection(zombie.mesh.position);
         addScreenShake(
-          zombie.type === "juggernaut" ? 0.28 : zombie.type === "brute" ? 0.18 : zombie.type === "charger" ? 0.16 : 0.08,
+          zombie.type === "juggernaut" ? 0.28 : zombie.type === "brute" ? 0.18 : zombie.type === "charger" ? 0.16 : 0.13,
         );
         if (zombie.type === "juggernaut" || zombie.type === "brute" || zombie.type === "charger") {
           triggerHitStop(0.04);
@@ -4652,38 +4558,37 @@ function updateZombies(dt) {
   }
 }
 
+/** Shared geometry/material for acid spit projectiles — avoids per-spit allocations. */
+const _acidSpitGeo = new THREE.SphereGeometry(0.15, 6, 6);
+_acidSpitGeo.userData.preventDispose = true;
+const _acidSpitMat = new THREE.MeshStandardMaterial({ color: 0x88ff44, emissive: 0x44aa22, emissiveIntensity: 0.5 });
+
 function spawnAcidSpit(from, to) {
-  // Create acid projectile
-  const acid = new THREE.Mesh(
-    new THREE.SphereGeometry(0.15, 6, 6),
-    new THREE.MeshStandardMaterial({ color: 0x88ff44, emissive: 0x44aa22, emissiveIntensity: 0.5 }),
-  );
+  const acid = new THREE.Mesh(_acidSpitGeo, _acidSpitMat);
   acid.position.copy(from);
   scene.add(acid);
-
   const velocity = new THREE.Vector3().subVectors(to, from).normalize().multiplyScalar(18);
+  acidProjectiles.push({ mesh: acid, velocity, time: 0, duration: 0.8 });
+}
 
-  // Animate projectile
-  const duration = 0.8;
-  let time = 0;
-  const interval = setInterval(() => {
-    time += 0.016;
-    acid.position.addScaledVector(velocity, 0.016);
-    velocity.y += settings.gravity * 0.016 * 0.3;
+/** Tick all in-flight acid spit projectiles — called from the main game loop. */
+function updateAcidProjectiles(dt) {
+  for (let i = acidProjectiles.length - 1; i >= 0; i--) {
+    const p = acidProjectiles[i];
+    p.time += dt;
+    p.mesh.position.addScaledVector(p.velocity, dt);
+    p.velocity.y += settings.gravity * dt * 0.3;
     const shouldEnd =
-      time >= duration ||
-      acid.position.y < terrainHeight(acid.position.x, acid.position.z) ||
+      p.time >= p.duration ||
+      p.mesh.position.y < terrainHeight(p.mesh.position.x, p.mesh.position.z) ||
       gameState !== "PLAYING" || gameOver;
     if (shouldEnd) {
-      clearInterval(interval);
-      pendingIntervals.delete(interval);
-      scene.remove(acid);
-      acid.geometry.dispose();
-      acid.material.dispose();
-      if (gameState === "PLAYING" && !gameOver) createAcidPuddle(acid.position);
+      const landPos = p.mesh.position.clone();
+      scene.remove(p.mesh);
+      acidProjectiles.splice(i, 1);
+      if (gameState === "PLAYING" && !gameOver) createAcidPuddle(landPos);
     }
-  }, 16);
-  pendingIntervals.add(interval);
+  }
 }
 
 function createAcidPuddle(position) {
@@ -4698,86 +4603,11 @@ function createAcidPuddle(position) {
 }
 
 // ─── Weather System ───────────────────────────────────────────────────────────
-function initWeather() {
-  const mapWeather = activeMapConfig.weather;
-  if (!mapWeather || Math.random() > mapWeather.chance) {
-    weatherState.active = false;
-    return;
-  }
-  weatherState.active = true;
-  weatherState.type = mapWeather.type;
-  weatherState.intensity = mapWeather.intensity;
-  weatherState.timer = 0;
-  weatherState.windDir.set(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
-
-  // Create weather particles (rain, snow, ash, dust)
-  const count = Math.floor(400 * mapWeather.intensity);
-  const geo = new THREE.BufferGeometry();
-  const positions = new Float32Array(count * 3);
-  const velocities = new Float32Array(count * 3);
-  for (let i = 0; i < count; i++) {
-    positions[i * 3] = (Math.random() - 0.5) * 80;
-    positions[i * 3 + 1] = Math.random() * 40 + 5;
-    positions[i * 3 + 2] = (Math.random() - 0.5) * 80;
-    velocities[i * 3] = weatherState.windDir.x * (0.5 + Math.random() * 2);
-    velocities[i * 3 + 1] = mapWeather.type === "snow" ? -0.3 - Math.random() * 0.8 : mapWeather.type === "ash" ? -0.1 - Math.random() * 0.4 : -3 - Math.random() * 4;
-    velocities[i * 3 + 2] = weatherState.windDir.z * (0.5 + Math.random() * 2);
-  }
-  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-
-  let color = 0xaaccff;
-  let opacity = 0.45;
-  let size = 0.08;
-  if (mapWeather.type === "snow") { color = 0xffffff; opacity = 0.65; size = 0.12; }
-  else if (mapWeather.type === "ash") { color = 0x554433; opacity = 0.35; size = 0.06; }
-  else if (mapWeather.type === "dust") { color = 0xc4a060; opacity = 0.3; size = 0.05; }
-  else if (mapWeather.type === "fog") { opacity = 0.25; size = 0.04; }
-
-  const mat = new THREE.PointsMaterial({ color, size, transparent: true, opacity, depthWrite: false });
-  const points = new THREE.Points(geo, mat);
-  scene.add(points);
-  weatherState.particles = points;
-  weatherState.velocities = velocities;
-}
-
-function updateWeather(dt) {
-  if (!weatherState.active || !weatherState.particles) return;
-  const positions = weatherState.particles.geometry.attributes.position.array;
-  const count = positions.length / 3;
-  const px = player.position.x;
-  const pz = player.position.z;
-  for (let i = 0; i < count; i++) {
-    positions[i * 3] += weatherState.velocities[i * 3] * dt;
-    positions[i * 3 + 1] += weatherState.velocities[i * 3 + 1] * dt;
-    positions[i * 3 + 2] += weatherState.velocities[i * 3 + 2] * dt;
-    // Wrap around player
-    if (positions[i * 3 + 1] < 0 || positions[i * 3 + 1] > 45) {
-      positions[i * 3] = px + (Math.random() - 0.5) * 70;
-      positions[i * 3 + 1] = 35 + Math.random() * 10;
-      positions[i * 3 + 2] = pz + (Math.random() - 0.5) * 70;
-    }
-    if (Math.abs(positions[i * 3] - px) > 50) positions[i * 3] = px + (Math.random() - 0.5) * 60;
-    if (Math.abs(positions[i * 3 + 2] - pz) > 50) positions[i * 3 + 2] = pz + (Math.random() - 0.5) * 60;
-  }
-  weatherState.particles.geometry.attributes.position.needsUpdate = true;
-}
-
-function clearWeather() {
-  if (weatherState.particles) {
-    const particleObjects = Array.isArray(weatherState.particles)
-      ? weatherState.particles
-      : [weatherState.particles];
-    for (const particleObject of particleObjects) {
-      if (!particleObject) continue;
-      scene.remove(particleObject);
-      particleObject.geometry?.dispose?.();
-      particleObject.material?.dispose?.();
-    }
-    weatherState.particles = null;
-  }
-  weatherState.velocities = null;
-  weatherState.active = false;
-}
+// Implementation extracted to src/world/weather.js — these are thin wrappers
+// so existing call sites (initWeather/updateWeather/clearWeather) keep working.
+function initWeather() { initWeatherSystem(weatherState, activeMapConfig.weather); }
+function updateWeather(dt) { updateWeatherSystem(weatherState, dt, player.position); }
+function clearWeather() { clearWeatherSystem(weatherState); }
 
 // ─── Scavenging / Materials ─────────────────────────────────────────────────
 function spawnMaterialDrop(position) {
@@ -4922,6 +4752,9 @@ const inventoryCraftHooks = {
     } else if (recipeId === "spike_trap") {
       spikeTrapCount = Math.min(spikeTrapCount + 1, 8);
       messageEl.textContent = `Crafted spike trap! (${spikeTrapCount} — press G to place)`;
+    } else if (recipeId === "turret") {
+      turretCount = Math.min(turretCount + 1, 3);
+      messageEl.textContent = `Crafted auto-turret! (${turretCount} — press G to deploy)`;
     } else if (recipeId === "ammo_pack") {
       messageEl.textContent = "Ammo pack crafted — all ammo reserves topped up.";
     }
@@ -4988,6 +4821,30 @@ function zombieHitBarricade(zombie, dt) {
   return false;
 }
 
+// ─── Muzzle Flash Light ──────────────────────────────────────────────────────
+/** A single reusable PointLight added to the camera rig. When a shot is fired
+ *  it's turned on at full intensity and decays to zero over ~60 ms, giving a
+ *  brief warm flash that illuminates nearby geometry — makes night fights and
+ *  indoor areas feel much more dynamic. */
+const _muzzleLight = new THREE.PointLight(0xffcc66, 0, 12, 2);
+_muzzleLight.position.set(0, -0.1, -1.2); // roughly at barrel tip in camera space
+camera.add(_muzzleLight);
+
+let _muzzleLightLife = 0;
+
+function flashMuzzleLight() {
+  _muzzleLight.intensity = 2.8;
+  _muzzleLightLife = 0.06; // seconds
+}
+
+function updateMuzzleLight(dt) {
+  if (_muzzleLightLife > 0) {
+    _muzzleLightLife -= dt;
+    _muzzleLight.intensity *= Math.exp(-dt * 50);
+    if (_muzzleLightLife <= 0) _muzzleLight.intensity = 0;
+  }
+}
+
 // ─── Shell Ejection ──────────────────────────────────────────────────────────
 function ejectShell(weaponName) {
   if (!pointerLocked || gameOver) return;
@@ -5044,15 +4901,16 @@ function spawnFireParticles(position, count = 12) {
   const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
   for (let i = 0; i < toSpawn; i++) {
     const dir = new THREE.Vector3((Math.random() - 0.5) * 2, 0.5 + Math.random() * 2, (Math.random() - 0.5) * 2).normalize();
-    const p = new THREE.Mesh(
-      _pGeoFire,
-      new THREE.MeshBasicMaterial({ color: Math.random() < 0.6 ? 0xff4400 : 0xffaa00, transparent: true, opacity: 0.9, depthWrite: false }),
-    );
+    const isOrange = Math.random() < 0.6;
+    const mat = _getParticleMat(isOrange ? "fireOrange" : "fireYellow", isOrange ? 0xff4400 : 0xffaa00);
+    mat.opacity = 0.9;
+    const p = new THREE.Mesh(_pGeoFire, mat);
     p.position.copy(position);
     p.position.y += 0.5 + Math.random() * 1.0;
     scene.add(p);
     particles.push({
-      mesh: p, velocity: dir.multiplyScalar(1 + Math.random() * 4),
+      mesh: p, matPool: isOrange ? "fireOrange" : "fireYellow",
+      velocity: dir.multiplyScalar(1 + Math.random() * 4),
       life: 0.5 + Math.random() * 0.8, maxLife: 1.3,
       gravity: true, isExplosion: false, isFire: true,
     });
@@ -5064,16 +4922,61 @@ function spawnSparks(position, count = 8) {
   const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
   for (let i = 0; i < toSpawn; i++) {
     const dir = new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * 2, (Math.random() - 0.5) * 2).normalize();
-    const p = new THREE.Mesh(
-      _pGeoSpark,
-      new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 1, depthWrite: false }),
-    );
+    const mat = _getParticleMat("spark", 0x88ccff);
+    const p = new THREE.Mesh(_pGeoSpark, mat);
     p.position.copy(position);
     scene.add(p);
     particles.push({
-      mesh: p, velocity: dir.multiplyScalar(3 + Math.random() * 8),
+      mesh: p, matPool: "spark",
+      velocity: dir.multiplyScalar(3 + Math.random() * 8),
       life: 0.15 + Math.random() * 0.2, maxLife: 0.35,
       gravity: false, isExplosion: false, isSpark: true,
+    });
+  }
+}
+
+/** Small fire lick on a burning zombie. */
+function spawnBurningParticle(position) {
+  if (particles.length >= MAX_PARTICLES) return;
+  const isOrange = Math.random() < 0.5;
+  const mat = _getParticleMat(isOrange ? "fireOrange" : "fireYellow", isOrange ? 0xff6600 : 0xffaa00);
+  mat.opacity = 0.85;
+  const p = new THREE.Mesh(_pGeoFire, mat);
+  p.position.set(
+    position.x + (Math.random() - 0.5) * 0.5,
+    position.y + 0.8 + Math.random() * 1.0,
+    position.z + (Math.random() - 0.5) * 0.5,
+  );
+  p.scale.setScalar(0.4 + Math.random() * 0.3);
+  scene.add(p);
+  particles.push({
+    mesh: p, matPool: isOrange ? "fireOrange" : "fireYellow",
+    velocity: new THREE.Vector3((Math.random() - 0.5) * 0.5, 1.5 + Math.random(), (Math.random() - 0.5) * 0.5),
+    life: 0.2 + Math.random() * 0.2, maxLife: 0.4,
+    gravity: false, isExplosion: false, isSpark: false,
+  });
+}
+
+/** Small dust puff when a bullet hits terrain — adds a lot of visual feedback. */
+function spawnTerrainImpactDust(position) {
+  const toSpawn = Math.min(5, MAX_PARTICLES - particles.length);
+  for (let i = 0; i < toSpawn; i++) {
+    const dir = new THREE.Vector3(
+      (Math.random() - 0.5) * 1.5,
+      0.6 + Math.random() * 1.2,
+      (Math.random() - 0.5) * 1.5,
+    );
+    const mat = _getParticleMat("dust", 0x887766);
+    mat.opacity = 0.55;
+    const p = new THREE.Mesh(_pGeoDebris, mat);
+    p.position.copy(position);
+    p.scale.setScalar(0.3 + Math.random() * 0.3);
+    scene.add(p);
+    particles.push({
+      mesh: p, matPool: "dust",
+      velocity: dir.multiplyScalar(1.5 + Math.random() * 2),
+      life: 0.25 + Math.random() * 0.25, maxLife: 0.5,
+      gravity: true, isExplosion: false, isSpark: false,
     });
   }
 }
@@ -5436,7 +5339,11 @@ function updateHud(dt) {
       .map((s) => `${s.name} ${s.level}`)
       .join(", ");
     const xpTarget = 120 + skillPoints * 40;
-    skillMetaEl.textContent = `SP:${skillPoints} XP:${Math.floor(skillXp)}/${xpTarget} | Upgrades: Shift+1..5${activeSkills ? ` | ${activeSkills}` : ""}`;
+    const globalLvl = getLevel(playerProgression);
+    const globalXp = playerProgression.xp || 0;
+    const globalNext = getXPForCurrentLevel(playerProgression) || 0;
+    const globalStr = globalNext > 0 ? `Lvl ${globalLvl} [${globalXp}/${globalNext}]` : `Lvl ${globalLvl} (MAX)`;
+    skillMetaEl.textContent = `${globalStr} | SP:${skillPoints} XP:${Math.floor(skillXp)}/${xpTarget} | Shift+1..5${activeSkills ? ` | ${activeSkills}` : ""}`;
   }
   const elapsed = Math.floor(gameTime);
   const mm = `${Math.floor(elapsed / 60)}`.padStart(2, "0");
@@ -5449,6 +5356,13 @@ function updateHud(dt) {
   }
 
   player.damageFlash = Math.max(0, player.damageFlash - dt * 1.5);
+  // Damage direction indicator
+  if (_damageDirTimer > 0) {
+    _damageDirTimer -= dt;
+    damageDirEl.style.opacity = `${Math.min(1, _damageDirTimer * 2.5)}`;
+  } else {
+    damageDirEl.style.opacity = "0";
+  }
   // Low health vignette: persistent pulsing red when HP < 30%
   const hpPct = player.hp / getPlayerMaxHealth();
   if (hpPct < 0.3 && hpPct > 0 && !gameOver) {
@@ -5766,8 +5680,10 @@ function drawEnemyHealthBars() {
 
 // ─── Floating Damage Numbers ──────────────────────────────────────────────────
 const _projVec = new THREE.Vector3();
+const MAX_FLOATING_DAMAGE = 40;
 function spawnFloatingDamage(worldPosition, amount, isHeadshot = false) {
   if (!amount || amount <= 0) return;
+  if (floatingDamageNums.length >= MAX_FLOATING_DAMAGE) return;
   const el = document.createElement("div");
   const rounded = Math.round(amount);
   el.textContent = isHeadshot ? `${rounded}!` : `${rounded}`;
@@ -5823,6 +5739,52 @@ function updateFloatingDamageNums(dt) {
   }
 }
 
+// ─── Blood Decals ────────────────────────────────────────────────────────────
+/** Drop a flat blood splat on the ground at (x, z). Fades over `life` seconds.
+ *  Recycles the oldest decal when the cap is hit. */
+function spawnBloodDecal(x, z, scale = 1, life = 28) {
+  const y = terrainHeight(x, z) + 0.02; // tiny lift to avoid z-fighting
+  // Real CC0 blood splatter texture (OpenGameArt). Mix splatter / drops randomly
+  // for variety. The PNG already has transparency, so we use `map` + `transparent`
+  // and tint via `color` to keep the kill darker over time.
+  const useDrops = Math.random() < 0.35;
+  const mat = new THREE.MeshBasicMaterial({
+    map: useDrops ? bloodDropsTex : bloodSplatterTex,
+    color: 0x882020,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(_pGeoDecal, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(x, y, z);
+  mesh.scale.setScalar(0.85 + Math.random() * 0.4 + (scale - 1) * 0.4);
+  mesh.rotation.z = Math.random() * Math.PI * 2;
+  scene.add(mesh);
+
+  if (bloodDecals.length >= MAX_BLOOD_DECALS) {
+    const old = bloodDecals.shift();
+    scene.remove(old.mesh);
+    old.mesh.material.dispose();
+  }
+  bloodDecals.push({ mesh, life, maxLife: life });
+}
+
+function updateBloodDecals(dt) {
+  for (let i = bloodDecals.length - 1; i >= 0; i--) {
+    const d = bloodDecals[i];
+    d.life -= dt;
+    if (d.life <= 0) {
+      scene.remove(d.mesh);
+      d.mesh.material.dispose();
+      bloodDecals.splice(i, 1);
+      continue;
+    }
+    // Fade out across the last 4 seconds of life so they don't pop out.
+    if (d.life < 4) d.mesh.material.opacity = 0.95 * (d.life / 4);
+  }
+}
+
 // ─── Blood Particles ─────────────────────────────────────────────────────────
 function spawnBloodParticles(position, count = 6) {
   const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
@@ -5832,15 +5794,13 @@ function spawnBloodParticles(position, count = 6) {
       0.2 + Math.random() * 1.8,
       (Math.random() - 0.5) * 2,
     ).normalize();
-    const p = new THREE.Mesh(
-      _pGeoBlood,
-      new THREE.MeshBasicMaterial({ color: 0x8b0000, transparent: true, opacity: 1, depthWrite: false }),
-    );
+    const mat = _getParticleMat("blood", 0x8b0000);
+    const p = new THREE.Mesh(_pGeoBlood, mat);
     p.position.copy(position);
     p.position.y += 1.3 + Math.random() * 0.5;
     scene.add(p);
     particles.push({
-      mesh: p,
+      mesh: p, matPool: "blood",
       velocity: dir.multiplyScalar(2.5 + Math.random() * 6),
       life: 0.18 + Math.random() * 0.28,
       maxLife: 0.46,
@@ -5860,7 +5820,10 @@ function updateParticles(dt) {
     p.life -= dt;
     if (p.life <= 0) {
       scene.remove(p.mesh);
-      if (disposedThisFrame < MAX_DISPOSES_PER_FRAME) {
+      if (p.matPool) {
+        _returnParticleMat(p.matPool, p.mesh.material);
+        // Don't dispose geometry (shared + preventDispose) — just detach mesh
+      } else if (disposedThisFrame < MAX_DISPOSES_PER_FRAME) {
         disposeOwnedObject3D(p.mesh);
         disposedThisFrame++;
       }
@@ -5913,6 +5876,8 @@ function updateParticles(dt) {
 function createExplosion(position, radius, damage) {
   addScreenShake(Math.min(0.75, 0.24 + radius * 0.06));
   playSfx("explosion", 1);
+  // Explosions alert zombies in a wider radius than gunshots.
+  emitSoundEvent(distractions, position, "explosion", 3.5);
   spawnFireParticles(position, 14);
   spawnSparks(position, 8);
   // Debris particles — use shared geometry to avoid geometry allocation per particle
@@ -5923,14 +5888,13 @@ function createExplosion(position, radius, damage) {
       Math.random() * 2.8,
       (Math.random() - 0.5) * 2,
     ).normalize();
-    const p = new THREE.Mesh(
-      _pGeoDebris,
-      new THREE.MeshBasicMaterial({ color: Math.random() < 0.5 ? 0xff8800 : 0xff3300, transparent: true, opacity: 1, depthWrite: false }),
-    );
+    const isOrange = Math.random() < 0.5;
+    const mat = _getParticleMat(isOrange ? "fireOrange" : "fireYellow", isOrange ? 0xff8800 : 0xff3300);
+    const p = new THREE.Mesh(_pGeoDebris, mat);
     p.position.copy(position);
     scene.add(p);
     particles.push({
-      mesh: p,
+      mesh: p, matPool: isOrange ? "fireOrange" : "fireYellow",
       velocity: dir.multiplyScalar(6 + Math.random() * 14),
       life: 0.3 + Math.random() * 0.4,
       maxLife: 0.7,
@@ -5968,6 +5932,7 @@ function createExplosion(position, radius, damage) {
       player.hp = Math.max(0, player.hp - damage * falloff * 0.4);
       player.damageFlash = 0.9;
       lastDamageTime = gameTime;
+      showDamageDirection(position);
       triggerHitStop(0.08);
       if (player.hp <= 0) killPlayer("Killed by explosion.");
     }
@@ -6197,10 +6162,495 @@ function placeSpikeTrap() {
   updateHUDMaterials();
 }
 
+// ─── Auto-Turret ──────────────────────────────────────────────────────────────
+// Deployable sentry gun that targets the nearest zombie within range and fires
+// automatically. Uses downloaded PBR textures for the body and barrel.
+const TURRET_RANGE = 18;
+const TURRET_DAMAGE = 14;
+const TURRET_FIRE_RATE = 0.22; // seconds between shots
+const TURRET_LIFETIME = 90;   // seconds before it runs out of ammo / breaks
+const TURRET_MAX_ACTIVE = 3;
+
+function placeTurret() {
+  if (!pointerLocked || gameOver || turretCount <= 0) return;
+  if (turrets.length >= TURRET_MAX_ACTIVE) {
+    messageEl.textContent = "Max turrets deployed! Destroy one first.";
+    return;
+  }
+  turretCount -= 1;
+  playSfx("ui_click", 1.2);
+  const dir = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const pos = player.position.clone().addScaledVector(dir, 2.5);
+  pos.y = terrainHeight(pos.x, pos.z);
+
+  const group = new THREE.Group();
+
+  // Tripod legs
+  const legMat = new THREE.MeshStandardMaterial({
+    ...turretBarrelPbr, metalness: 0.7, roughness: 0.45,
+  });
+  for (let k = 0; k < 3; k++) {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.55, 6), legMat);
+    const a = (k / 3) * Math.PI * 2;
+    leg.position.set(Math.cos(a) * 0.3, 0.25, Math.sin(a) * 0.3);
+    leg.rotation.z = Math.cos(a) * 0.35;
+    leg.rotation.x = Math.sin(a) * 0.35;
+    leg.castShadow = true;
+    group.add(leg);
+  }
+
+  // Body (box with painted metal texture)
+  const bodyMat = new THREE.MeshStandardMaterial({
+    ...turretBodyPbr, metalness: 0.3, roughness: 0.65,
+  });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.28, 0.35), bodyMat);
+  body.position.y = 0.58;
+  body.castShadow = true;
+  group.add(body);
+
+  // Barrel (cylinder with bare metal texture)
+  const barrelMat = new THREE.MeshStandardMaterial({
+    ...turretBarrelPbr, metalness: 0.85, roughness: 0.3,
+  });
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.035, 0.55, 8), barrelMat);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.58, -0.4);
+  barrel.castShadow = true;
+  group.add(barrel);
+
+  // Muzzle tip indicator (small emissive ring)
+  const muzzleTip = new THREE.Mesh(
+    new THREE.RingGeometry(0.025, 0.04, 8),
+    new THREE.MeshBasicMaterial({ color: 0xff4400, side: THREE.DoubleSide }),
+  );
+  muzzleTip.rotation.x = Math.PI / 2;
+  muzzleTip.position.set(0, 0.58, -0.68);
+  group.add(muzzleTip);
+
+  // Status LED
+  const led = new THREE.Mesh(
+    new THREE.SphereGeometry(0.025, 6, 6),
+    new THREE.MeshBasicMaterial({ color: 0x00ff44 }),
+  );
+  led.position.set(0.18, 0.72, 0);
+  group.add(led);
+
+  group.position.set(pos.x, pos.y, pos.z);
+  scene.add(group);
+
+  turrets.push({
+    mesh: group,
+    barrel,
+    muzzleTip,
+    led,
+    range: TURRET_RANGE,
+    damage: TURRET_DAMAGE,
+    fireCd: 0,
+    muzzleFlash: 0,
+    lifetime: TURRET_LIFETIME,
+    yaw: player.yaw,
+  });
+  messageEl.textContent = `Auto-turret deployed! (${turretCount} left, ${Math.round(TURRET_LIFETIME)}s lifespan)`;
+  updateHUDMaterials();
+}
+
+function updateTurrets(dt) {
+  for (let ti = turrets.length - 1; ti >= 0; ti--) {
+    const t = turrets[ti];
+    t.lifetime -= dt;
+    t.fireCd = Math.max(0, t.fireCd - dt);
+
+    // Blink LED yellow when low on time
+    if (t.lifetime < 15) {
+      t.led.material.color.setHex(Math.sin(gameTime * 6) > 0 ? 0xffaa00 : 0x442200);
+    }
+
+    if (t.lifetime <= 0) {
+      // Turret expires — small spark burst
+      spawnSparks(t.mesh.position, 12);
+      playSpatialSfx("explosion", t.mesh.position, 0.3);
+      scene.remove(t.mesh);
+      t.mesh.traverse((o) => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
+      turrets.splice(ti, 1);
+      messageEl.textContent = "A turret ran out of ammo!";
+      continue;
+    }
+
+    // Find nearest zombie in range
+    let nearestDist = t.range * t.range;
+    let nearestIdx = -1;
+    for (let zi = 0; zi < zombies.length; zi++) {
+      const dSq = t.mesh.position.distanceToSquared(zombies[zi].mesh.position);
+      if (dSq < nearestDist) {
+        nearestDist = dSq;
+        nearestIdx = zi;
+      }
+    }
+
+    if (nearestIdx >= 0) {
+      // Aim toward target
+      const target = zombies[nearestIdx].mesh.position;
+      const dx = target.x - t.mesh.position.x;
+      const dz = target.z - t.mesh.position.z;
+      const targetYaw = Math.atan2(-dx, -dz);
+      // Smooth rotation with clamped angular velocity
+      let diff = targetYaw - t.yaw;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const maxTurnSpeed = 6; // radians per second
+      const turnStep = Math.sign(diff) * Math.min(Math.abs(diff), maxTurnSpeed * dt);
+      t.yaw += turnStep;
+      // Rotate barrel group around Y
+      t.barrel.position.x = -Math.sin(t.yaw - t.mesh.rotation.y) * 0.4;
+      t.barrel.position.z = -Math.cos(t.yaw - t.mesh.rotation.y) * 0.4;
+      t.barrel.rotation.y = t.yaw - t.mesh.rotation.y;
+      t.muzzleTip.position.x = -Math.sin(t.yaw - t.mesh.rotation.y) * 0.68;
+      t.muzzleTip.position.z = -Math.cos(t.yaw - t.mesh.rotation.y) * 0.68;
+
+      // Muzzle flash cooldown
+      if (t.muzzleFlash > 0) {
+        t.muzzleFlash -= dt;
+        if (t.muzzleFlash <= 0) {
+          t.muzzleTip.material.color.setHex(0xff4400);
+        }
+      }
+
+      // Fire
+      if (t.fireCd <= 0) {
+        t.fireCd = TURRET_FIRE_RATE;
+        applyZombieDamage(nearestIdx, t.damage);
+        // Muzzle flash
+        t.muzzleTip.material.color.setHex(0xffcc00);
+        t.muzzleFlash = 0.05;
+        // Spark at zombie
+        if (zombies[nearestIdx]) {
+          spawnSparks(zombies[nearestIdx].mesh.position.clone().setY(
+            zombies[nearestIdx].mesh.position.y + 1.2), 3);
+        }
+        playSpatialSfx("pistol_fire", t.mesh.position, 0.35);
+      }
+    }
+  }
+}
+
+// ─── Toxic Barrels ────────────────────────────────────────────────────────────
+// Green barrels that spawn on maps. When shot, they explode into a toxic gas
+// cloud that damages and slows zombies within it. Uses downloaded PBR textures
+// tinted green via emissive.
+const TOXIC_BARREL_CLOUD_RADIUS = 5.5;
+const TOXIC_BARREL_CLOUD_DPS = 15;
+const TOXIC_BARREL_CLOUD_DURATION = 8;
+const toxicClouds = [];
+
+function spawnToxicBarrel(x, z) {
+  const y = terrainHeight(x, z);
+  const group = new THREE.Group();
+
+  // Barrel body (cylinder)
+  const barrelMat = new THREE.MeshStandardMaterial({
+    ...toxicBarrelPbr,
+    metalness: 0.35,
+    roughness: 0.6,
+    emissive: new THREE.Color(0x114400),
+    emissiveIntensity: 0.15,
+  });
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.38, 1.0, 12), barrelMat);
+  barrel.position.y = 0.5;
+  barrel.castShadow = true;
+  group.add(barrel);
+
+  // Hazard stripe band
+  const stripe = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.36, 0.39, 0.12, 12),
+    new THREE.MeshStandardMaterial({
+      color: 0x222222, metalness: 0.2, roughness: 0.9,
+      emissive: new THREE.Color(0x33ff00), emissiveIntensity: 0.08,
+    }),
+  );
+  stripe.position.y = 0.7;
+  group.add(stripe);
+
+  // Top cap
+  const cap = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.32, 0.35, 0.06, 12),
+    new THREE.MeshStandardMaterial({ color: 0x334433, metalness: 0.5, roughness: 0.5 }),
+  );
+  cap.position.y = 1.02;
+  group.add(cap);
+
+  // Subtle green glow point light
+  const glow = new THREE.PointLight(0x44ff22, 0.3, 4);
+  glow.position.y = 0.8;
+  group.add(glow);
+
+  group.position.set(x, y, z);
+  scene.add(group);
+  toxicBarrels.push({ mesh: group, hp: 30 });
+}
+
+function damageToxicBarrel(barrelIdx, damage) {
+  const b = toxicBarrels[barrelIdx];
+  b.hp -= damage;
+  if (b.hp <= 0) {
+    const pos = b.mesh.position.clone();
+    scene.remove(b.mesh);
+    b.mesh.traverse((o) => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
+    toxicBarrels.splice(barrelIdx, 1);
+    // Spawn toxic cloud
+    createToxicCloud(pos);
+    playSpatialSfx("explosion", pos, 0.6);
+    spawnFireParticles(pos, 6);
+    topCenterAlertEl.textContent = "☣ Toxic cloud!";
+    alertTimer = 2;
+  }
+}
+
+function createToxicCloud(position) {
+  // Visual: translucent green sphere
+  const cloud = new THREE.Mesh(
+    new THREE.SphereGeometry(TOXIC_BARREL_CLOUD_RADIUS, 16, 12),
+    new THREE.MeshBasicMaterial({
+      color: 0x22ff44, transparent: true, opacity: 0.15,
+      side: THREE.DoubleSide, depthWrite: false,
+    }),
+  );
+  cloud.position.copy(position);
+  cloud.position.y += 1.5;
+  scene.add(cloud);
+
+  // Inner glow
+  const inner = new THREE.PointLight(0x33ff11, 1.5, TOXIC_BARREL_CLOUD_RADIUS * 1.2);
+  inner.position.copy(position);
+  inner.position.y += 1;
+  scene.add(inner);
+
+  toxicClouds.push({
+    mesh: cloud,
+    light: inner,
+    position: position.clone(),
+    radius: TOXIC_BARREL_CLOUD_RADIUS,
+    dps: TOXIC_BARREL_CLOUD_DPS,
+    life: TOXIC_BARREL_CLOUD_DURATION,
+    maxLife: TOXIC_BARREL_CLOUD_DURATION,
+  });
+}
+
+function updateToxicClouds(dt) {
+  for (let ci = toxicClouds.length - 1; ci >= 0; ci--) {
+    const c = toxicClouds[ci];
+    c.life -= dt;
+    const t = c.life / c.maxLife;
+    c.mesh.material.opacity = 0.15 * t;
+    c.mesh.scale.setScalar(1 + (1 - t) * 0.3); // expand slightly as it fades
+    c.light.intensity = 1.5 * t;
+
+    // Spawn rising green wisp particles
+    if (particles.length < MAX_PARTICLES && Math.random() < 0.35) {
+      const mat = _getParticleMat("toxic", 0x33ff33);
+      mat.opacity = 0.6;
+      const wisp = new THREE.Mesh(_pGeoToxic, mat);
+      const angle = Math.random() * Math.PI * 2;
+      const r = Math.random() * c.radius * 0.8;
+      wisp.position.set(
+        c.position.x + Math.cos(angle) * r,
+        c.position.y + Math.random() * 0.5,
+        c.position.z + Math.sin(angle) * r,
+      );
+      scene.add(wisp);
+      particles.push({
+        mesh: wisp,
+        velocity: new THREE.Vector3((Math.random() - 0.5) * 0.4, 1.2 + Math.random() * 0.8, (Math.random() - 0.5) * 0.4),
+        life: 0.6 + Math.random() * 0.5,
+        maxLife: 1.1,
+        gravity: false,
+        isExplosion: false,
+        matPool: "toxic",
+      });
+    }
+
+    if (c.life <= 0) {
+      scene.remove(c.mesh);
+      scene.remove(c.light);
+      c.mesh.geometry.dispose();
+      c.mesh.material.dispose();
+      c.light.dispose();
+      toxicClouds.splice(ci, 1);
+      continue;
+    }
+
+    // Damage + slow zombies inside
+    for (let zi = zombies.length - 1; zi >= 0; zi--) {
+      const dSq = c.position.distanceToSquared(zombies[zi].mesh.position);
+      if (dSq < c.radius * c.radius) {
+        applyZombieDamage(zi, c.dps * dt);
+        if (zombies[zi]) {
+          // Slow effect
+          zombies[zi]._toxicSlow = 0.5; // 50% speed for next tick
+        }
+      }
+    }
+
+    // Also damage player if inside
+    const playerDist = player.position.distanceToSquared(c.position);
+    if (playerDist < c.radius * c.radius) {
+      player.hp = Math.max(0, player.hp - c.dps * dt * 0.4);
+      if (player.hp <= 0) killPlayer("Poisoned by toxic gas...");
+    }
+  }
+}
+
+// ─── Loot Crates ──────────────────────────────────────────────────────────────
+// Searchable crates that spawn on the map. Walk up and press E to search them
+// for materials, ammo, or grenades. Uses downloaded PBR plank textures.
+const LOOT_CRATE_INTERACT_DIST = 3.5;
+let _lootCratePromptShown = false;
+
+function spawnLootCrate(x, z) {
+  const y = terrainHeight(x, z);
+  const group = new THREE.Group();
+
+  // Main crate box
+  const crateMat = new THREE.MeshStandardMaterial({
+    ...lootCratePbr, metalness: 0.0, roughness: 0.85,
+  });
+  const crate = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.65, 0.6), crateMat);
+  crate.position.y = 0.33;
+  crate.castShadow = true;
+  crate.receiveShadow = true;
+  group.add(crate);
+
+  // Metal corner brackets
+  const bracketMat = new THREE.MeshStandardMaterial({
+    color: 0x555555, metalness: 0.8, roughness: 0.4,
+  });
+  for (let cx = -1; cx <= 1; cx += 2) {
+    for (let cz = -1; cz <= 1; cz += 2) {
+      const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.68, 0.06), bracketMat);
+      bracket.position.set(cx * 0.42, 0.34, cz * 0.27);
+      group.add(bracket);
+    }
+  }
+
+  // Lid (slightly ajar for visual interest)
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.06, 0.62), crateMat);
+  lid.position.set(0, 0.68, 0);
+  lid.rotation.z = 0.04;
+  lid.castShadow = true;
+  group.add(lid);
+
+  // Small "loot glow" from inside
+  const glow = new THREE.PointLight(0xffcc44, 0.4, 3);
+  glow.position.set(0, 0.5, 0);
+  group.add(glow);
+
+  group.position.set(x, y, z);
+  group.rotation.y = Math.random() * Math.PI * 2;
+  scene.add(group);
+  lootCrates.push({ mesh: group, glow, lid, searched: false, openAnim: 0 });
+}
+
+function searchNearbyLootCrate() {
+  for (let ci = lootCrates.length - 1; ci >= 0; ci--) {
+    const c = lootCrates[ci];
+    if (c.searched) continue;
+    const dSq = player.position.distanceToSquared(c.mesh.position);
+    if (dSq < LOOT_CRATE_INTERACT_DIST * LOOT_CRATE_INTERACT_DIST) {
+      c.searched = true;
+      c.openAnim = 0.001; // start open animation
+      playSfx("ui_click", 1);
+
+      // Random loot
+      const lootRoll = Math.random();
+      let msg = "Loot crate: ";
+      if (lootRoll < 0.3) {
+        // Materials
+        const matTypes = ["scrap", "metal", "wood", "cloth", "chemicals"];
+        const mat1 = matTypes[Math.floor(Math.random() * matTypes.length)];
+        const mat2 = matTypes[Math.floor(Math.random() * matTypes.length)];
+        const amt1 = 2 + Math.floor(Math.random() * 3);
+        const amt2 = 1 + Math.floor(Math.random() * 2);
+        materials[mat1] = (materials[mat1] || 0) + amt1;
+        materials[mat2] = (materials[mat2] || 0) + amt2;
+        msg += `+${amt1} ${mat1}, +${amt2} ${mat2}`;
+      } else if (lootRoll < 0.55) {
+        // Ammo for random weapon
+        const wpn = player.weapons[Math.floor(Math.random() * player.weapons.length)];
+        const ammoAmt = Math.floor(wpn.magSize * 1.5);
+        const cap = getWeaponReserveCap(wpn);
+        wpn.reserve = Math.min(wpn.reserve + ammoAmt, cap);
+        syncPlayerAmmoFields(player);
+        msg += `+${ammoAmt} ${wpn.name} ammo`;
+      } else if (lootRoll < 0.72) {
+        // Grenade + materials
+        grenadeCount = Math.min(grenadeCount + 2, 8);
+        materials.scrap = (materials.scrap || 0) + 2;
+        msg += "+2 grenades, +2 scrap";
+      } else if (lootRoll < 0.85) {
+        // Medkit heal
+        player.hp = Math.min(getPlayerMaxHealth(), player.hp + 35);
+        materials.cloth = (materials.cloth || 0) + 1;
+        msg += "+35 HP, +1 cloth";
+      } else {
+        // Jackpot — lots of materials
+        const matTypes = ["scrap", "metal", "wood", "cloth", "chemicals"];
+        msg += "Jackpot! ";
+        for (const m of matTypes) {
+          const amt = 2 + Math.floor(Math.random() * 3);
+          materials[m] = (materials[m] || 0) + amt;
+          msg += `+${amt} ${m} `;
+        }
+      }
+      messageEl.textContent = msg;
+      score += 50;
+      updateHUDMaterials();
+      addSkillXP(5);
+      return true;
+    }
+  }
+  return false;
+}
+
+function updateLootCratePrompt() {
+  let showPrompt = false;
+  for (const c of lootCrates) {
+    if (c.searched) continue;
+    const dSq = player.position.distanceToSquared(c.mesh.position);
+    if (dSq < LOOT_CRATE_INTERACT_DIST * LOOT_CRATE_INTERACT_DIST) {
+      showPrompt = true;
+      break;
+    }
+  }
+  if (showPrompt && !_lootCratePromptShown) {
+    _lootCratePromptShown = true;
+    messageEl.textContent = "Press [F] to search crate";
+  } else if (!showPrompt && _lootCratePromptShown) {
+    _lootCratePromptShown = false;
+  }
+}
+
+function updateLootCrateAnims(dt) {
+  for (const c of lootCrates) {
+    if (c.openAnim > 0 && c.openAnim < 1) {
+      c.openAnim = Math.min(1, c.openAnim + dt * 2.2);
+      // Lid swings open (rotates around back edge)
+      const t = c.openAnim;
+      const ease = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) * (-2 * t + 2) / 2; // easeInOutQuad
+      c.lid.rotation.z = 0.04 + ease * 1.2; // ~70 degrees open
+      c.lid.position.y = 0.68 - ease * 0.08;
+      // Fade glow out as it opens
+      c.glow.intensity = 0.4 * (1 - ease);
+    }
+  }
+}
+
 function useThrowableOrTrap() {
   if (!pointerLocked || gameOver) return;
   if (molotovCount > 0) {
     throwMolotov();
+    return;
+  }
+  if (turretCount > 0) {
+    placeTurret();
     return;
   }
   if (landMineCount > 0) {
@@ -6433,7 +6883,34 @@ function updateRockets(dt) {
 }
 
 // ─── Flamethrower Puffs ──────────────────────────────────────────────────────
+// Shared geometry for flame puffs — avoids creating+destroying geometry per puff.
+// Size variation is achieved via mesh.scale instead of per-puff geometry.
+const _flamePuffGeo = new THREE.SphereGeometry(0.15, 5, 5);
+_flamePuffGeo.userData.preventDispose = true;
+
+// Material pool for flame puffs (same pattern as particle system).
+const _flamePuffMatPool = [];
+const _flamePuffColors = [0xff6600, 0xff3300, 0xffaa00];
+function _getFlamePuffMat(color) {
+  if (_flamePuffMatPool.length > 0) {
+    const m = _flamePuffMatPool.pop();
+    m.color.setHex(color);
+    m.opacity = 0.82;
+    m.visible = true;
+    return m;
+  }
+  return new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.82, depthWrite: false });
+}
+function _returnFlamePuffMat(mat) {
+  if (_flamePuffMatPool.length < 200) _flamePuffMatPool.push(mat);
+  else mat.dispose();
+}
+
+const MAX_FLAME_PUFFS = 120;
+
 function spawnFlamePuff(origin, direction, weapon = {}) {
+  if (flamePuffs.length >= MAX_FLAME_PUFFS) return;
+
   const spread = 0.18;
   const dir = direction.clone();
   dir.x += (Math.random() - 0.5) * spread;
@@ -6441,12 +6918,11 @@ function spawnFlamePuff(origin, direction, weapon = {}) {
   dir.z += (Math.random() - 0.5) * spread;
   dir.normalize();
 
-  const color = Math.random() < 0.5 ? 0xff6600 : Math.random() < 0.5 ? 0xff3300 : 0xffaa00;
+  const color = _flamePuffColors[(Math.random() * 3) | 0];
   const size = 0.1 + Math.random() * 0.22;
-  const mesh = new THREE.Mesh(
-    new THREE.SphereGeometry(size, 5, 5),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.82 }),
-  );
+  const mat = _getFlamePuffMat(color);
+  const mesh = new THREE.Mesh(_flamePuffGeo, mat);
+  mesh.scale.setScalar(size / 0.15); // scale shared geometry to desired size
   mesh.position.copy(origin);
   scene.add(mesh);
   flamePuffs.push({
@@ -6461,14 +6937,19 @@ function spawnFlamePuff(origin, direction, weapon = {}) {
 }
 
 const _flameDamagePerSec = 28;
+// Set used to deduplicate zombie hits across flame puffs within a single tick.
+const _flameHitThisTick = new Set();
+
 function updateFlamePuffs(dt) {
+  _flameHitThisTick.clear();
+
   for (let i = flamePuffs.length - 1; i >= 0; i--) {
     const f = flamePuffs[i];
     f.life -= dt;
     if (f.life <= 0) {
       scene.remove(f.mesh);
-      f.mesh.geometry?.dispose();
-      f.mesh.material?.dispose();
+      _returnFlamePuffMat(f.mesh.material);
+      // Geometry is shared — do NOT dispose
       flamePuffs.splice(i, 1);
       continue;
     }
@@ -6477,15 +6958,22 @@ function updateFlamePuffs(dt) {
     f.mesh.position.y += dt * 0.6;
     const t = f.life / f.maxLife;
     f.mesh.material.opacity = t * 0.8;
-    f.mesh.scale.setScalar(1 + (1 - t) * 1.8);
+    const baseScale = f.mesh.userData._baseScale || (f.mesh.userData._baseScale = f.mesh.scale.x);
+    f.mesh.scale.setScalar(baseScale * (1 + (1 - t) * 1.8));
 
     f.damageTickCd -= dt;
     if (f.damageTickCd <= 0) {
       f.damageTickCd = 0.1;
       for (let zi = zombies.length - 1; zi >= 0; zi--) {
+        if (_flameHitThisTick.has(zi)) continue; // already hit by another puff this tick
         if (f.mesh.position.distanceTo(zombies[zi].mesh.position) < 1.2) {
+          _flameHitThisTick.add(zi);
+          const zombie = zombies[zi];
           applyZombieDamage(zi, _flameDamagePerSec * 0.1);
-          igniteZombie(zombies[zi], 2.8, f.burnDamage || 10);
+          // Only ignite if the zombie survived (splice shifts indices)
+          if (zombies[zi] === zombie) {
+            igniteZombie(zombie, 2.8, f.burnDamage || 10);
+          }
         }
       }
     }
@@ -6495,14 +6983,16 @@ function updateFlamePuffs(dt) {
 // ─── Boss Zombie ──────────────────────────────────────────────────────────────
 function spawnBoss() {
   if (bossAlive || gameOver || gameState !== "PLAYING" || !pointerLocked) return;
+  // Pull flavor from the active map so every region has its own headliner.
+  const flavor = resolveBossFlavor(activeMapConfig.id);
   const angle = Math.random() * Math.PI * 2;
   const dist = 35 + Math.random() * 18;
   const bx = player.position.x + Math.cos(angle) * dist;
   const bz = player.position.z + Math.sin(angle) * dist;
   const group = new THREE.Group();
-  const bossSkinMat = new THREE.MeshStandardMaterial({ color: 0x243018, roughness: 0.75 });
-  const bossBodyMat = new THREE.MeshStandardMaterial({ color: 0x101008, roughness: 0.9 });
-  const bossEyeMat = new THREE.MeshBasicMaterial({ color: 0xff2200 });
+  const bossSkinMat = new THREE.MeshStandardMaterial({ color: flavor.skinColor, roughness: 0.75 });
+  const bossBodyMat = new THREE.MeshStandardMaterial({ color: flavor.bodyColor, roughness: 0.9 });
+  const bossEyeMat = new THREE.MeshBasicMaterial({ color: flavor.eyeColor });
   const hips = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.56, 0.42), bossBodyMat);
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.48), bossBodyMat);
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 12), bossSkinMat);
@@ -6526,9 +7016,12 @@ function spawnBoss() {
   eyeR.position.set(0.12, 2.24, 0.3);
   group.add(hips, torso, head, jaw, leftArm, rightArm, leftLeg, rightLeg, eyeL, eyeR);
   group.position.set(bx, terrainHeight(bx, bz), bz);
-  group.scale.setScalar(2.35);
+  group.scale.setScalar(flavor.scale);
   group.traverse((obj) => { if (obj instanceof THREE.Mesh) obj.castShadow = true; });
   scene.add(group);
+
+  const baseHp = 650;
+  const hp = Math.round(baseHp * flavor.hpMult * (1 + Math.max(0, wave - 5) * 0.12));
   zombies.push({
     mesh: group,
     leftArm,
@@ -6536,31 +7029,48 @@ function spawnBoss() {
     leftLeg,
     rightLeg,
     type: "brute",
-    hp: 650,
-    maxHp: 650,
-    speed: 2.2,
-    damage: 28,
+    hp,
+    maxHp: hp,
+    speed: 2.2 * flavor.speedMult,
+    damage: 28 * flavor.damageMult,
     walkPhase: 0,
     attackTimer: 0,
     wanderSeed: Math.random() * 1000,
     isBoss: true,
+    bossName: flavor.name,
+    bossRewardMult: flavor.rewardMult,
     attackAnimating: false,
     attackAnimTime: 0,
   });
   bossAlive = true;
-  topCenterAlertEl.textContent = "⚠ BOSS ZOMBIE INCOMING!";
+  topCenterAlertEl.textContent = `⚠ ${flavor.name.toUpperCase()} APPROACHES!`;
   alertTimer = 4.5;
   playSfx("boss_alert", 1);
-  messageEl.textContent = "BOSS ZOMBIE! Focus fire — worth 500 points!";
+  const reward = Math.round(500 * flavor.rewardMult);
+  messageEl.textContent = `${flavor.name}! Focus fire — worth ${reward} points.`;
 }
 
 // ─── Explosive Barrels ────────────────────────────────────────────────────────
 function spawnExplosiveBarrel(x, z) {
   const y = terrainHeight(x, z);
   const group = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xcc2200, roughness: 0.5, metalness: 0.6 });
+  // Rusty metal (Polyhaven CC0) tinted red — looks weathered & dangerous.
+  const bodyMat = new THREE.MeshStandardMaterial({
+    map: rustyMetalPbr.map,
+    normalMap: rustyMetalPbr.normalMap,
+    roughnessMap: rustyMetalPbr.roughnessMap,
+    color: 0xcc4422,
+    roughness: 1.0,
+    metalness: 0.55,
+  });
   const bandMat = new THREE.MeshStandardMaterial({ color: 0xffcc00, roughness: 0.48, metalness: 0.45 });
-  const topMat = new THREE.MeshStandardMaterial({ color: 0x881100, roughness: 0.5, metalness: 0.65 });
+  const topMat = new THREE.MeshStandardMaterial({
+    map: rustyMetalPbr.map,
+    normalMap: rustyMetalPbr.normalMap,
+    color: 0x881100,
+    roughness: 1.0,
+    metalness: 0.6,
+  });
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.86, 10), bodyMat);
   const topCap = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.07, 10), topMat);
   const band1 = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.07, 10), bandMat);
@@ -6596,6 +7106,19 @@ function checkBarrelHits(bulletFrom, bulletTo) {
   return false;
 }
 
+function checkToxicBarrelHits(bulletFrom, bulletTo, damage) {
+  for (let i = toxicBarrels.length - 1; i >= 0; i--) {
+    const b = toxicBarrels[i];
+    const center = b.mesh.position.clone();
+    center.y += 0.5;
+    if (segmentSphereHit(bulletFrom, bulletTo, center, 0.4)) {
+      damageToxicBarrel(i, damage);
+      return true;
+    }
+  }
+  return false;
+}
+
 // ─── Zombie Corpse Revival System ────────────────────────────────────────────
 function createZombieCorpse(position, type, rotationY) {
   const corpse = new THREE.Group();
@@ -6622,6 +7145,47 @@ function createZombieCorpse(position, type, rotationY) {
     type,
     position: position.clone(),
   });
+}
+
+// ─── Death Collapse Animation ──────────────────────────────────────────────
+/** Brief tipping-over animation before a zombie mesh is removed from the scene.
+ *  Mesh rotates forward ~90 degrees over 0.4 s, sinks slightly, then gets disposed. */
+const deathCollapses = [];
+
+function startDeathCollapse(mesh) {
+  // Pick a random fall direction: forward, left, or right
+  const fallAngle = (Math.random() - 0.5) * 0.6; // slight lateral variation
+  deathCollapses.push({ mesh, time: 0, duration: 0.45, fallAngle });
+}
+
+function updateDeathCollapses(dt) {
+  for (let i = deathCollapses.length - 1; i >= 0; i--) {
+    const c = deathCollapses[i];
+    c.time += dt;
+    const t = Math.min(c.time / c.duration, 1);
+    // Ease-in fall: accelerates like gravity
+    const ease = t * t;
+    c.mesh.rotation.x = ease * (Math.PI * 0.45);
+    c.mesh.rotation.z = ease * c.fallAngle;
+    c.mesh.position.y -= ease * dt * 2.5;
+    // Fade out near end
+    if (t > 0.7) {
+      c.mesh.traverse((o) => {
+        if (o.isMesh && o.material) {
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of mats) {
+            if (!m.transparent) { m.transparent = true; m.depthWrite = false; }
+            m.opacity = Math.max(0, 1 - (t - 0.7) / 0.3);
+          }
+        }
+      });
+    }
+    if (t >= 1) {
+      scene.remove(c.mesh);
+      disposeObject3D(c.mesh);
+      deathCollapses.splice(i, 1);
+    }
+  }
 }
 
 function updateCorpses(dt) {
@@ -6673,28 +7237,28 @@ function throwNoiseMaker() {
   const distraction = { mesh: noiseMesh, velocity, active: false, beepTimer: 0, position: origin.clone() };
   distractions.push(distraction);
 
-  // Physics arc
-  let time = 0;
-  const maxTime = 1.2;
-  const interval = setInterval(() => {
-    time += 0.02;
-    distraction.velocity.y += settings.gravity * 0.02;
-    noiseMesh.position.addScaledVector(distraction.velocity, 0.02);
-    noiseMesh.rotation.x += 0.15;
-    noiseMesh.rotation.z += 0.1;
+  // Physics arc driven by game loop (see updateFlyingDistractions)
+  flyingDistractions.push({ distraction, time: 0, maxTime: 1.2 });
+}
 
-    const floor = terrainHeight(noiseMesh.position.x, noiseMesh.position.z) + 0.11;
-    if (noiseMesh.position.y <= floor || time >= maxTime) {
-      clearInterval(interval);
-      pendingIntervals.delete(interval);
-      noiseMesh.position.y = floor;
-      distraction.active = true;
-      distraction.position.copy(noiseMesh.position);
-      // Start beeping
-      startDistractionBeep(distraction);
+function updateFlyingDistractions(dt) {
+  for (let i = flyingDistractions.length - 1; i >= 0; i--) {
+    const fd = flyingDistractions[i];
+    fd.time += dt;
+    fd.distraction.velocity.y += settings.gravity * dt;
+    fd.distraction.mesh.position.addScaledVector(fd.distraction.velocity, dt);
+    fd.distraction.mesh.rotation.x += 7.5 * dt;
+    fd.distraction.mesh.rotation.z += 5 * dt;
+
+    const floor = terrainHeight(fd.distraction.mesh.position.x, fd.distraction.mesh.position.z) + 0.11;
+    if (fd.distraction.mesh.position.y <= floor || fd.time >= fd.maxTime) {
+      fd.distraction.mesh.position.y = floor;
+      fd.distraction.active = true;
+      fd.distraction.position.copy(fd.distraction.mesh.position);
+      startDistractionBeep(fd.distraction);
+      flyingDistractions.splice(i, 1);
     }
-  }, 20);
-  pendingIntervals.add(interval);
+  }
 }
 
 function startDistractionBeep(distraction) {
@@ -6740,6 +7304,31 @@ function triggerNoiseDistraction(position, duration = 4.5) {
     deactivateDistraction(distraction);
   }, duration * 1000);
   pendingTimeouts.add(tid);
+}
+
+// ─── Abandoned Camp Loot ─────────────────────────────────────────────────────
+/** Populate an abandoned camp with material pickups + light zombie defenders.
+ *  The camp marker mesh is already placed by events.js; we just need the
+ *  loot scatter and a couple of walkers nearby. */
+function populateAbandonedCamp(campPos) {
+  // Materials in a tight ring so the player has to step into the camp to grab them.
+  const lootCount = 4 + Math.floor(Math.random() * 3); // 4-6 items
+  for (let i = 0; i < lootCount; i++) {
+    const a = (i / lootCount) * Math.PI * 2 + Math.random() * 0.4;
+    const r = 1.2 + Math.random() * 1.6;
+    spawnMaterialDrop({
+      x: campPos.x + Math.cos(a) * r,
+      y: campPos.y,
+      z: campPos.z + Math.sin(a) * r,
+    });
+  }
+  // 1-3 walkers loitering nearby — enough to make the player commit to clearing them.
+  const guardCount = 1 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < guardCount; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 6 + Math.random() * 4;
+    addZombie(campPos.x + Math.cos(a) * r, campPos.z + Math.sin(a) * r, "walker");
+  }
 }
 
 // ─── Supply Drop System ───────────────────────────────────────────────────
@@ -6982,6 +7571,12 @@ function getPlayerMaxHealth() {
 }
 
 // ─── Melee Attack System ────────────────────────────────────────────────────
+// Pooled melee geometries / materials (avoid per-attack allocation + leaks)
+const _meleeKnifeGeo = new THREE.BoxGeometry(0.06, 0.25, 0.02);
+const _meleeKnifeMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.9, roughness: 0.2 });
+const _meleeSlashGeo = new THREE.PlaneGeometry(0.8, 0.15);
+const _meleeSlashMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
+
 function performMelee() {
   if (!pointerLocked || gameOver || meleeCooldown > 0) return;
   if (activeVehicle || inventoryOpen || upgradeBenchOpen) return;
@@ -6989,33 +7584,32 @@ function performMelee() {
   meleeCooldown = 0.65;
   playSfx("melee_knife", 1);
 
-  // Knife swing animation
-  const knife = new THREE.Mesh(
-    new THREE.BoxGeometry(0.06, 0.25, 0.02),
-    new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.9, roughness: 0.2 }),
-  );
+  // Knife swing animation (pooled geo/mat)
+  const knife = new THREE.Mesh(_meleeKnifeGeo, _meleeKnifeMat);
   knife.position.set(0.35, -0.25, -0.4);
   firstPersonWeapon.weapon.add(knife);
-  setTimeout(() => firstPersonWeapon.weapon.remove(knife), 200);
+  const knifeTimeout = setTimeout(() => {
+    firstPersonWeapon.weapon.remove(knife);
+    pendingTimeouts.delete(knifeTimeout);
+  }, 200);
+  pendingTimeouts.add(knifeTimeout);
 
   // Calculate melee hit
   const reach = 3.5;
   const swingDir = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
   const hitPoint = player.position.clone().addScaledVector(swingDir, reach * 0.6);
 
-  // Visual slash
-  const slash = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.8, 0.15),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
-  );
+  // Visual slash (pooled geo/mat)
+  const slash = new THREE.Mesh(_meleeSlashGeo, _meleeSlashMat);
   slash.position.copy(hitPoint);
   slash.position.y += 1.5;
   slash.lookAt(player.position);
   scene.add(slash);
-  setTimeout(() => {
+  const slashTimeout = setTimeout(() => {
     scene.remove(slash);
-    disposeOwnedObject3D(slash);
+    pendingTimeouts.delete(slashTimeout);
   }, 100);
+  pendingTimeouts.add(slashTimeout);
 
   // Check zombie hits
   let hitCount = 0;
@@ -7025,8 +7619,8 @@ function performMelee() {
     if (d < reach) {
       hitCount++;
       const damage = 45 * (1 + skills.damage.value); // Knife does high damage
-      applyZombieDamage(i, damage, true, true); // Melee headshots count
-      spawnBloodParticles(zombie.mesh.position.clone().add(new THREE.Vector3(0, 1.5, 0)), 8);
+      applyZombieDamage(i, damage, false, true); // Melee — not a headshot, but is melee
+      spawnBloodParticles(_tempVec1.copy(zombie.mesh.position).setY(zombie.mesh.position.y + 1.5), 8);
     }
   }
 
@@ -7036,12 +7630,25 @@ function performMelee() {
   }
 }
 
-// ─── Periodic Events ────────────────────────────────────────────────────────
-setInterval(() => {
-  if (gameState === "PLAYING" && !gameOver && Math.random() < 0.15) {
-    spawnSupplyDrop();
+// ─── Periodic Events (supply drops) ─────────────────────────────────────────
+let _supplyDropTimer = 0;
+function updatePeriodicEvents(dt) {
+  _supplyDropTimer += dt;
+  if (_supplyDropTimer >= 45) {
+    _supplyDropTimer -= 45;
+    const broadcasting = !!eventDirector.broadcastActive;
+    const baseChance = broadcasting ? 0.5 : 0.15;
+    if (Math.random() < baseChance) spawnSupplyDrop();
+    // During a broadcast, schedule a second drop ~22.5s later via a tracked timeout
+    if (broadcasting && Math.random() < 0.4) {
+      const t = setTimeout(() => {
+        if (gameState === "PLAYING" && !gameOver && eventDirector.broadcastActive) spawnSupplyDrop();
+        pendingTimeouts.delete(t);
+      }, 22500);
+      pendingTimeouts.add(t);
+    }
   }
-}, 45000); // Try supply drop every 45s
+}
 
 function animate(nowMs) {
   const now = nowMs * 0.001;
@@ -7068,6 +7675,8 @@ function animate(nowMs) {
         topCenterAlertEl.textContent = exec.alert;
         alertTimer = exec.alertTimer || 3;
       }
+      // Camp event sets up loot pickups around campPosition once the event fires.
+      if (exec && exec.campPosition) populateAbandonedCamp(exec.campPosition);
     } else if (eventResult && eventResult.type === "survivor_end") {
       if (eventResult.success) {
         score += 300;
@@ -7080,6 +7689,24 @@ function animate(nowMs) {
         topCenterAlertEl.textContent = "💀 Survivor didn't make it...";
         alertTimer = 2.5;
       }
+    } else if (eventResult && eventResult.type === "tide_spawn") {
+      // Stream zombies in from a fixed bearing for the tide duration.
+      const tideAngle = eventResult.angle;
+      // Spread along a 30°-wide arc so the line isn't perfectly straight.
+      const jitter = (Math.random() - 0.5) * (Math.PI / 6);
+      const a = tideAngle + jitter;
+      const dist = 38 + Math.random() * 14;
+      const zx = player.position.x + Math.cos(a) * dist;
+      const zz = player.position.z + Math.sin(a) * dist;
+      // Mostly runners with the occasional brute to break formation.
+      const type = Math.random() < 0.85 ? "runner" : "brute";
+      addZombie(zx, zz, type);
+    } else if (eventResult && eventResult.type === "tide_end") {
+      messageEl.textContent = "The tide subsides...";
+    } else if (eventResult && eventResult.type === "broadcast_end") {
+      messageEl.textContent = "Broadcast signal lost.";
+    } else if (eventResult && eventResult.type === "camp_expired") {
+      messageEl.textContent = "The camp was overrun before you got there.";
     }
 
     // Mission system
@@ -7122,7 +7749,7 @@ function animate(nowMs) {
     // Auto-fire for flamethrower (and any other full-auto weapons) while mouse held
     if (mouseLeftHeld && pointerLocked && player.shootCooldown === 0 && !gameOver && !activeVehicle && !inventoryOpen && !upgradeBenchOpen) {
       const _aw = getActiveWeapon(player);
-      if (_aw.name === "Flamethrower" || _aw.name === "Rifle") shoot();
+      if (_aw.name === "Flamethrower" || _aw.name === "Rifle" || _aw.name === "SMG" || _aw.name === "Minigun") shoot();
     }
     if (activeVehicle) {
       updateVehicles(dt);
@@ -7168,14 +7795,24 @@ function animate(nowMs) {
     updateFlamePuffs(dt);
     updatePickups(dt);
     updateGrenades(dt);
+    updateAcidProjectiles(dt);
+    updateFlyingDistractions(dt);
     updateMolotovProjectiles(dt);
     updateMolotovFires(dt);
     updateLandMines(dt);
     updateSpikeTraps(dt);
     updateParticles(dt);
+    updateMuzzleLight(dt);
+    updateBloodDecals(dt);
+    updateDeathCollapses(dt);
     updateCorpses(dt);
     updateSupplyDrops(dt);
     updateBarricades(dt);
+    updateTurrets(dt);
+    updateToxicClouds(dt);
+    updateLootCratePrompt();
+    updateLootCrateAnims(dt);
+    updatePeriodicEvents(dt);
     updateWeather(dt);
     updateDayNight();
     autoSaveTick(dt);
@@ -7326,9 +7963,12 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyJ" && gameState === "PLAYING" && !gameOver) throwMolotov();
   if (e.code === "KeyK" && gameState === "PLAYING" && !gameOver && !e.repeat) placeLandMine();
   if (e.code === "KeyL" && gameState === "PLAYING" && !gameOver && !e.repeat) placeSpikeTrap();
+  if (e.code === "KeyP" && gameState === "PLAYING" && !gameOver && !e.repeat) placeTurret();
   if (e.code === "KeyF" && gameState === "PLAYING" && !gameOver && !e.repeat) {
     if (activeVehicle) exitVehicle();
     else {
+      // Try searching a loot crate first
+      if (searchNearbyLootCrate()) return;
       const downedMate = findNearestDownedTeammate();
       if (downedMate) {
         downedMate.beingRevived = true;
