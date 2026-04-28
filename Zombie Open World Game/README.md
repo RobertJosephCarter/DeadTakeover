@@ -1,90 +1,81 @@
 # DeadTakeover
 
-A browser-based zombie open-world survival FPS built with **Three.js** and **Vite**.
+DeadTakeover is a browser-based open-world zombie survival FPS built with **Three.js** and **Vite**.  
+Fight through escalating hordes, build barricades, scavenge resources, and survive across multiple hostile maps with AI teammates.
 
-Play solo with AI teammates across multiple maps, survive waves of undead, build barricades, and scavenge materials from the environment.
+## Why This Project
 
----
+This game is focused on high-intensity survival loops inside the browser:
 
-## Play Now
+- Fast combat with weapon switching, ADS, and tactical utility items
+- Squad-style pressure with special infected variants and map-based pacing
+- Progression systems (materials, perks, and defensive building) that reward long runs
 
-Clone the repo, install dependencies, and run:
+## Gameplay Highlights
+
+- **6 playable maps**: Verdant Meadows, Dead Valley, Frost Expanse, Badlands, Ruined City, Outbreak City
+- **AI teammates** that assist in combat and survival
+- **Special infected roster** including Spitter, Hunter, Charger, Crawler, Juggernaut, Boomer, and Screamer
+- **Barricade system** with wood and metal variants
+- **Material scavenging** from combat encounters
+- **Skill/perk upgrades** for damage, health, speed, reload, and headshot bonuses
+- **Dynamic world pressure** via weather systems, day/night cycle, and horde spikes
+- **Combat feedback systems** like kill feed, floating damage numbers, and enemy HP bars
+
+## Controls
+
+| Action | Key |
+| --- | --- |
+| Move | `W` `A` `S` `D` |
+| Sprint | `Shift` |
+| Crouch | `C` |
+| Jump | `Space` |
+| Shoot | `LMB` |
+| Aim Down Sights | `RMB` |
+| Reload | `R` |
+| Swap Weapon | `Q` / `E` |
+| Weapon Slots | `1` Rifle, `2` Shotgun, `3` Pistol |
+| Throw Grenade | `G` |
+| Throw Noise Maker | `V` |
+| Melee Knife | `F` |
+| Build Barricade | `B` |
+| Switch Build Material | `N` |
+| Team Swap | `T` |
+| Pause | `P` |
+| Toggle Audio | `M` |
+
+## Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then open the Vite dev URL in your browser (usually `http://localhost:5173`).
+Open the Vite URL shown in your terminal (usually `http://localhost:5173`).
 
----
+## Build Commands
 
-## Controls
-
-| Action | Key |
-|--------|-----|
-| Move | `W` `A` `S` `D` |
-| Sprint | `Shift` |
-| Crouch | `C` |
-| Jump | `Space` |
-| Shoot | `LMB` (Click) |
-| Aim Down Sights | `RMB` |
-| Reload | `R` |
-| Swap Weapon | `Q` / `E` |
-| Weapon Slots | `1` (Rifle) `2` (Shotgun) `3` (Pistol) |
-| Throw Grenade | `G` |
-| Throw Noise Maker | `V` |
-| Melee Knife | `F` |
-| Build Barricade | `B` |
-| Switch Build Type | `N` (Wood / Metal) |
-| Team Swap | `T` |
-| Pause | `P` |
-| Toggle Audio | `M` |
-
----
-
-## Features
-
-- **6 Maps** — Verdant Meadows, Dead Valley, Frost Expanse, Badlands, Ruined City, and Outbreak City
-- **AI Teammates** — AI companions that fight alongside you
-- **Special Zombies** — Spitter (acid spit), Hunter (leap attack), Charger (charge), Crawler (low profile), Juggernaut, Boomer, Screamer
-- **Corpse Revival** — Zombies revive if not killed with a headshot
-- **Barricade Building** — Place wood or metal barricades to hold choke points
-- **Material Scavenging** — Collect scrap, wood, metal, cloth, and chemicals from defeated zombies
-- **Skill / Perk System** — Upgrade reload speed, damage, health, speed, and headshot bonus
-- **Supply Drops** — Watch for star-marked supply drops falling from the sky (shown on minimap)
-- **Weather System** — Dynamic rain, snow, fog, dust, and ash per map
-- **Day / Night Cycle** — Horde nights with increased zombie spawns
-- **Explosive Barrels** — Use environmental explosives to your advantage
-- **Floating Damage Numbers** — See real-time hit values and headshot crits above enemies
-- **Kill Feed** — Scrolling kill log on the right side showing kills, streaks, and bonuses
-- **Enemy Health Bars** — Health bars displayed above special and boss zombies in-world
-- **Barricade HP Bars** — Visual health bars appear above damaged barricades
-- **Reload Progress Bar** — Crosshair-adjacent bar shows reload completion percentage
-- **Vehicle HUD** — HP and fuel gauge displayed when driving a vehicle
-- **Enhanced Minimap** — Supply drops, survivors, and near-reviving corpses are marked
-
----
+```bash
+npm run build
+npm run preview
+```
 
 ## Tech Stack
 
-- [Three.js](https://threejs.org/) — WebGL rendering engine
-- [Vite](https://vitejs.dev/) — Build tool and dev server
-- Web Audio API — Spatial 3D audio and procedural sound effects
-- HTML5 Canvas — Minimap rendering
+- [Three.js](https://threejs.org/)
+- [Vite](https://vitejs.dev/)
+- Web Audio API
+- HTML5 Canvas HUD/Minimap
 
----
+## Assets and Credits
 
-## Assets & Credits
+- Building kits and street atlas: [Kenney](https://kenney.nl/) (CC0)
+- Pistol model: [Webaverse pistol asset](https://github.com/webaverse/pistol)
+- Music: Kevin MacLeod ([Incompetech](https://incompetech.com/), CC BY)
+  - Title theme: *Floating Cities*
+  - Map themes: *Movement Proposition*, *Darkest Child*, *Frost Waltz*, *Crossing the Chasm*, *Volatile Reaction*, *District Four*
 
-- **Buildings & street atlas** — [Kenney.nl](https://kenney.nl/) (CC0)
-- **Pistol GLB** — [Webaverse](https://github.com/webaverse/pistol)
-- **Music** — Kevin MacLeod ([incompetech.com](https://incompetech.com/), CC BY)
-  - Title: *Floating Cities*
-  - Maps + Outbreak City: *Movement Proposition*, *Darkest Child*, *Frost Waltz*, *Crossing the Chasm*, *Volatile Reaction*, *District Four*
+## Repository Notes
 
----
-
-## License
-
-This project is private. All code and assets remain the property of the author unless otherwise stated.
+- This repository is currently configured as private in `package.json`.
+- All rights for project-specific code/content remain with the author unless noted otherwise.
