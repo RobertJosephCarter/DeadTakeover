@@ -153,10 +153,8 @@ export function buildZombieMesh({ type, x, y, z, assets }) {
   else if (type === "boomer") group.scale.set(1.05, 1.15, 1.05);
   else if (type === "screamer") group.scale.set(0.92, 1.02, 0.92);
 
-  // Zombie shadow casters are one of the biggest frame-time costs during hordes.
-  // Keep receiveShadow false and disable per-zombie casting for stable gameplay FPS.
   group.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) obj.castShadow = false;
+    if (obj instanceof THREE.Mesh) obj.castShadow = true;
   });
 
   return { group, leftArm, rightArm, leftLeg, rightLeg };

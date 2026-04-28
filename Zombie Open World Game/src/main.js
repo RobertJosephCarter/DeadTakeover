@@ -254,86 +254,14 @@ const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerH
 camera.position.set(0, 1.8, 6);
 scene.add(camera);
 
-const QUALITY_PIXEL_RATIO_CAP = 1.25;
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY_PIXEL_RATIO_CAP));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.07;
-
-// ─── Adaptive Quality System ─────────────────────────────────────────────────
-// Non-destructive: monitors FPS and auto-downgrades/upgrades rendering quality
-// to maintain a smooth experience. All changes are reversible.
-const _aq = {
-  level: 0,           // 0 = full quality, 1 = reduced shadows, 2 = lower res, 3 = shadows off
-  frameTimes: [],      // rolling window of frame times
-  sampleCount: 45,     // frames to average over
-  downThreshold: 28,   // drop quality if avg FPS < this
-  upThreshold: 42,     // restore quality if avg FPS > this (hysteresis)
-  cooldown: 0,         // seconds before next quality change
-  cooldownDuration: 3, // seconds between changes
-  baseShadowMapSize: 1024,
-  basePixelRatio: Math.min(window.devicePixelRatio, QUALITY_PIXEL_RATIO_CAP),
-};
-
-function _aqTick(frameDt) {
-  if (frameDt <= 0) return;
-  _aq.frameTimes.push(frameDt);
-  if (_aq.frameTimes.length > _aq.sampleCount) _aq.frameTimes.shift();
-  if (_aq.frameTimes.length < _aq.sampleCount) return; // need enough samples
-  _aq.cooldown -= frameDt;
-  if (_aq.cooldown > 0) return;
-
-  let sum = 0;
-  for (let i = 0; i < _aq.frameTimes.length; i++) sum += _aq.frameTimes[i];
-  const avgFps = _aq.frameTimes.length / sum;
-
-  if (avgFps < _aq.downThreshold && _aq.level < 3) {
-    _aq.level++;
-    _aqApply();
-    _aq.cooldown = _aq.cooldownDuration;
-    _aq.frameTimes.length = 0; // reset samples after change
-  } else if (avgFps > _aq.upThreshold && _aq.level > 0) {
-    _aq.level--;
-    _aqApply();
-    _aq.cooldown = _aq.cooldownDuration;
-    _aq.frameTimes.length = 0;
-  }
-}
-
-function _aqApply() {
-  switch (_aq.level) {
-    case 0: // Full quality
-      renderer.shadowMap.enabled = true;
-      sun.shadow.mapSize.set(_aq.baseShadowMapSize, _aq.baseShadowMapSize);
-      renderer.setPixelRatio(_aq.basePixelRatio);
-      scene.fog.far = 260;
-      break;
-    case 1: // Reduced shadow map
-      renderer.shadowMap.enabled = true;
-      sun.shadow.mapSize.set(512, 512);
-      sun.shadow.map?.dispose();
-      sun.shadow.map = null; // force re-creation at new size
-      renderer.setPixelRatio(_aq.basePixelRatio);
-      scene.fog.far = 220;
-      break;
-    case 2: // Lower pixel ratio + small shadows
-      renderer.shadowMap.enabled = true;
-      sun.shadow.mapSize.set(512, 512);
-      renderer.setPixelRatio(Math.min(_aq.basePixelRatio, 0.9));
-      scene.fog.far = 180;
-      break;
-    case 3: // Shadows off, lowest resolution
-      renderer.shadowMap.enabled = false;
-      renderer.setPixelRatio(Math.min(_aq.basePixelRatio, 0.75));
-      scene.fog.far = 160;
-      break;
-  }
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}
 
 const hemi = new THREE.HemisphereLight(0xa5d7ff, 0x2e392a, 0.6);
 scene.add(hemi);
@@ -343,7 +271,7 @@ sun.position.set(30, 45, -10);
 sun.castShadow = true;
 sun.shadow.bias = -0.0002;
 sun.shadow.normalBias = 0.02;
-sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 8;
 sun.shadow.camera.far = 130;
 sun.shadow.camera.left = -42;
@@ -762,41 +690,7 @@ async function loadCityBuildingLibrary() {
 }
 const chunkSize = 60;
 const chunkRadius = 4;
-const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 32, 32);
-const MAX_CHUNK_BUILDS_PER_FRAME = 2;
-const chunkBuildQueue = [];
-let _chunkQueueHead = 0; // index pointer avoids O(N) shift()
-const queuedChunkKeys = new Set();
-const loadedChunkKeys = new Set();
-
-function chunkKey(cx, cz) {
-  return `${cx},${cz}`;
-}
-
-function queueChunkBuild(cx, cz) {
-  const key = chunkKey(cx, cz);
-  if (loadedChunkKeys.has(key) || queuedChunkKeys.has(key)) return;
-  chunkBuildQueue.push({ cx, cz });
-  queuedChunkKeys.add(key);
-}
-
-function drainChunkBuildQueue(maxBuilds = MAX_CHUNK_BUILDS_PER_FRAME) {
-  let built = 0;
-  while (_chunkQueueHead < chunkBuildQueue.length && built < maxBuilds) {
-    const next = chunkBuildQueue[_chunkQueueHead++];
-    const key = chunkKey(next.cx, next.cz);
-    queuedChunkKeys.delete(key);
-    if (loadedChunkKeys.has(key)) continue;
-    makeChunk(next.cx, next.cz);
-    loadedChunkKeys.add(key);
-    built += 1;
-  }
-  // Compact only when head has advanced far enough to avoid memory leak
-  if (_chunkQueueHead > 64) {
-    chunkBuildQueue.splice(0, _chunkQueueHead);
-    _chunkQueueHead = 0;
-  }
-}
+const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 48, 48);
 
 const player = {
   position: new THREE.Vector3(0, 1.8, 0),
@@ -2483,30 +2377,17 @@ function spawnPropAt(id, x, z, yaw) {
 function ensureChunks() {
   const pcx = Math.floor(player.position.x / chunkSize);
   const pcz = Math.floor(player.position.z / chunkSize);
-  const missing = [];
   for (let x = pcx - chunkRadius; x <= pcx + chunkRadius; x += 1) {
     for (let z = pcz - chunkRadius; z <= pcz + chunkRadius; z += 1) {
-      const key = chunkKey(x, z);
-      if (!loadedChunkKeys.has(key) && !queuedChunkKeys.has(key)) {
-        const dx = x - pcx;
-        const dz = z - pcz;
-        missing.push({ cx: x, cz: z, d2: dx * dx + dz * dz });
-      }
+      if (!groundChunks.some((c) => c.cx === x && c.cz === z)) makeChunk(x, z);
     }
   }
-  if (missing.length) {
-    missing.sort((a, b) => a.d2 - b.d2);
-    for (const c of missing) queueChunkBuild(c.cx, c.cz);
-  }
-  // Front-load initial spawn area, then continue streaming in small batches.
-  drainChunkBuildQueue(groundChunks.length === 0 ? 10 : MAX_CHUNK_BUILDS_PER_FRAME);
   // Unload chunks that moved out of range
   for (let i = groundChunks.length - 1; i >= 0; i -= 1) {
     const c = groundChunks[i];
     if (Math.abs(c.cx - pcx) > chunkRadius + 1 || Math.abs(c.cz - pcz) > chunkRadius + 1) {
       scene.remove(c.mesh);
       c.mesh.geometry?.dispose();
-      loadedChunkKeys.delete(chunkKey(c.cx, c.cz));
       groundChunks.splice(i, 1);
     }
   }
@@ -2637,9 +2518,6 @@ function resetWorldForNewMap() {
     c.mesh.geometry.dispose();
   }
   groundChunks.length = 0;
-  chunkBuildQueue.length = 0;
-  queuedChunkKeys.clear();
-  loadedChunkKeys.clear();
   for (const t of trees) {
     scene.remove(t.group);
     disposeTreeGroup(t.group);
@@ -3205,7 +3083,6 @@ function spawnBullet(origin, direction, damage, options = {}) {
 
 const _losDirection = new THREE.Vector3();
 const _losRaycaster = new THREE.Raycaster();
-const _losHits = [];
 const _tempVec1 = new THREE.Vector3();
 const _tempVec2 = new THREE.Vector3();
 const _tempVec3 = new THREE.Vector3();
@@ -3236,9 +3113,7 @@ function hasLineOfSight(origin, targetPosition) {
 
   _losRaycaster.set(origin, _losDirection);
   _losRaycaster.far = Math.max(0.01, distance - 0.15);
-  _losHits.length = 0;
-  _losRaycaster.intersectObjects(visionBlockers, true, _losHits);
-  return _losHits.length === 0;
+  return _losRaycaster.intersectObjects(visionBlockers, true).length === 0;
 }
 
 const _eyeVec = new THREE.Vector3();
@@ -3454,13 +3329,10 @@ function updateWeapon(dt) {
   const bobX = moving ? Math.sin(swayTime) * 0.018 : 0;
   const bobY = moving ? Math.abs(Math.cos(swayTime * 0.5)) * 0.014 : 0;
 
-  // Smoother exponential recoil/kick recovery — feels less robotic
-  weaponRecoil *= Math.exp(-dt * 8.5);
-  if (weaponRecoil < 0.001) weaponRecoil = 0;
-  weaponKick *= Math.exp(-dt * 12);
-  if (weaponKick < 0.001) weaponKick = 0;
-  lookSwayX *= Math.exp(-dt * 20);
-  lookSwayY *= Math.exp(-dt * 20);
+  weaponRecoil = Math.max(0, weaponRecoil - dt * 7.5);
+  weaponKick = Math.max(0, weaponKick - dt * 11);
+  lookSwayX *= Math.exp(-dt * 18);
+  lookSwayY *= Math.exp(-dt * 18);
   const weapon = getActiveWeapon(player);
   const weaponName = weapon.name;
   const isRifle = weaponName === "Rifle";
@@ -3595,24 +3467,15 @@ function movePlayer(dt) {
     const _forward = getV3().set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
     const _right = getV3().set(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
 
-    const targetVel = getV3()
+    player.moveVelocity
       .copy(_forward.multiplyScalar(-inY))
       .add(_right.multiplyScalar(inX))
       .normalize()
       .multiplyScalar(moveSpeed);
 
-    // Smooth acceleration/deceleration for less jank on low-FPS frames
-    const accelRate = 18; // higher = snappier
-    const lerpFactor = Math.min(1, accelRate * dt);
-    player.moveVelocity.lerp(targetVel, lerpFactor);
-
     player.bobTime += dt * (sprinting ? 10 : 7);
   } else {
-    // Smooth deceleration when stopping
-    const decelRate = 22;
-    const decelFactor = Math.min(1, decelRate * dt);
-    player.moveVelocity.multiplyScalar(1 - decelFactor);
-    if (player.moveVelocity.lengthSq() < 0.001) player.moveVelocity.set(0, 0, 0);
+    player.moveVelocity.set(0, 0, 0);
   }
 
   player.position.addScaledVector(player.moveVelocity, dt);
@@ -3664,10 +3527,7 @@ function updateBullets(dt) {
     bullet.mesh.position.addScaledVector(bullet.velocity, dt);
     if (bullet.life <= 0) {
       releaseBulletRecord(bullet);
-      // Swap-and-pop: O(1) removal
-      const bLast = bullets.length - 1;
-      if (i !== bLast) bullets[i] = bullets[bLast];
-      bullets.length = bLast;
+      bullets.splice(i, 1);
       continue;
     }
 
@@ -3677,33 +3537,25 @@ function updateBullets(dt) {
       spawnSparks(bullet.mesh.position, 4);
       spawnTerrainImpactDust(bullet.mesh.position);
       releaseBulletRecord(bullet);
-      const bLast2 = bullets.length - 1;
-      if (i !== bLast2) bullets[i] = bullets[bLast2];
-      bullets.length = bLast2;
+      bullets.splice(i, 1);
       continue;
     }
 
     if (bullet.owner === "player" && checkBarrelHits(_bulletPrev, bullet.mesh.position)) {
       releaseBulletRecord(bullet);
-      const bLast3 = bullets.length - 1;
-      if (i !== bLast3) bullets[i] = bullets[bLast3];
-      bullets.length = bLast3;
+      bullets.splice(i, 1);
       continue;
     }
     if (bullet.owner === "player" && checkToxicBarrelHits(_bulletPrev, bullet.mesh.position, bullet.damage || 24)) {
       releaseBulletRecord(bullet);
-      const bLast4 = bullets.length - 1;
-      if (i !== bLast4) bullets[i] = bullets[bLast4];
-      bullets.length = bLast4;
+      bullets.splice(i, 1);
       continue;
     }
     // Block projectile against scenery (buildings, trees) so you can't shoot through walls.
     if (segmentBlockedByScenery(_bulletPrev, bullet.mesh.position)) {
       spawnSparks(bullet.mesh.position, 3);
       releaseBulletRecord(bullet);
-      const bLast5 = bullets.length - 1;
-      if (i !== bLast5) bullets[i] = bullets[bLast5];
-      bullets.length = bLast5;
+      bullets.splice(i, 1);
       continue;
     }
     let hitZombie = false;
@@ -3740,9 +3592,7 @@ function updateBullets(dt) {
           spawnSparks(bullet.mesh.position, 2);
         } else {
           releaseBulletRecord(bullet);
-          const bLast6 = bullets.length - 1;
-          if (i !== bLast6) bullets[i] = bullets[bLast6];
-          bullets.length = bLast6;
+          bullets.splice(i, 1);
         }
         break;
       }
@@ -4282,37 +4132,9 @@ const _zombieSpitterOff2  = new THREE.Vector3(0, 1.5, 0);
 const _zombieAcidOrigin   = new THREE.Vector3();
 const _zombieAcidTarget   = new THREE.Vector3();
 
-/** Spatial grid for zombie-zombie separation — rebuilt each frame in O(N). */
-const _zombieSepGrid = new Map();
-const _SEP_CELL_SIZE = 3; // slightly > 2 × separation radius
-const _SEP_CELL_INV = 1 / _SEP_CELL_SIZE;
-function _zombieSepCellKey(x, z) {
-  return ((x * _SEP_CELL_INV) | 0) * 100003 + ((z * _SEP_CELL_INV) | 0);
-}
-// Pre-computed neighbor offsets for grid adjacency
-const _sepNeighborOffsets = [
-  -100003 - 1, -100003, -100003 + 1,
-  -1, /* self=0 */ 1,
-  100003 - 1, 100003, 100003 + 1,
-];
-
-function _buildZombieSepGrid() {
-  _zombieSepGrid.clear();
-  for (let i = 0; i < zombies.length; i++) {
-    const z = zombies[i];
-    const key = _zombieSepCellKey(z.mesh.position.x, z.mesh.position.z);
-    let list = _zombieSepGrid.get(key);
-    if (!list) { list = []; _zombieSepGrid.set(key, list); }
-    list.push(i);
-  }
-}
-
 function updateZombies(dt) {
   // Expire short-lived sound events (gunshot/explosion alerts).
   pruneSoundEvents(distractions, dt);
-
-  // Build spatial grid for O(N) zombie separation (replaces O(N²) all-pairs check)
-  _buildZombieSepGrid();
 
   // Update acid / fire puddles
   for (let ai = acidPuddles.length - 1; ai >= 0; ai--) {
@@ -4322,9 +4144,7 @@ function updateZombies(dt) {
     if (puddle.life <= 0) {
       scene.remove(puddle.mesh);
       disposeOwnedObject3D(puddle.mesh);
-      const apLast = acidPuddles.length - 1;
-      if (ai !== apLast) acidPuddles[ai] = acidPuddles[apLast];
-      acidPuddles.length = apLast;
+      acidPuddles.splice(ai, 1);
       continue;
     }
     // Damage players/teammates in acid puddles (fire puddles don't hurt player)
@@ -4370,7 +4190,7 @@ function updateZombies(dt) {
           if (o.isMesh && o.material) {
             zombie._burnOrigMats.push({ mesh: o, mat: o.material });
             o.material = o.material.clone();
-            o.material.emissive.setHex(0xff4400); // reuse existing Color — no allocation
+            o.material.emissive = new THREE.Color(0xff4400);
             o.material.emissiveIntensity = 0.35;
           }
         });
@@ -4497,10 +4317,9 @@ function updateZombies(dt) {
         zombie.hunterCooldown = 5 + Math.random() * 3;
         zombie.hunterLeaping = true;
         playSpatialSfx("hunter_leap", zombie.mesh.position, 0.8);
-        // Calculate leap arc — use scratch vec, copy into stored leapVelocity
-        const leapDir = getV3().copy(toTarget).normalize();
-        if (!zombie.leapVelocity) zombie.leapVelocity = new THREE.Vector3();
-        zombie.leapVelocity.copy(leapDir.multiplyScalar(14));
+        // Calculate leap arc
+        const leapDir = toTarget.clone().normalize();
+        zombie.leapVelocity = leapDir.multiplyScalar(14);
         zombie.leapVelocity.y = 6;
         zombie.leapTime = 0.5;
       }
@@ -4546,8 +4365,8 @@ function updateZombies(dt) {
           showDamageDirection(zombie.mesh.position);
           addScreenShake(0.6);
           triggerHitStop(0.075);
-          // Knockback — use scratch vec instead of clone
-          const knockDir = getV3().copy(zombie.chargeDirection);
+          // Knockback
+          const knockDir = zombie.chargeDirection.clone();
           player.position.addScaledVector(knockDir, 6);
           messageEl.textContent = "CHARGER HIT!";
           zombie.isCharging = false;
@@ -4617,48 +4436,20 @@ function updateZombies(dt) {
     zombie.mesh.position.y = terrainHeight(zombie.mesh.position.x, zombie.mesh.position.z);
 
     // Zombie-zombie separation: push apart to prevent stacking
-    // Optimised: only check nearby zombies via a spatial grid (built once per frame)
     const sepRadius = 1.4;
     const sepRadiusSq = sepRadius * sepRadius;
     const sepForce = 2.5;
-    const cellKey = _zombieSepCellKey(zombie.mesh.position.x, zombie.mesh.position.z);
-    const neighbors = _zombieSepGrid.get(cellKey);
-    if (neighbors) {
-      for (let ni = 0; ni < neighbors.length; ni++) {
-        const j = neighbors[ni];
-        if (j === i) continue;
-        const other = zombies[j];
-        if (!other) continue;
-        const dx = zombie.mesh.position.x - other.mesh.position.x;
-        const dz = zombie.mesh.position.z - other.mesh.position.z;
-        const d2 = dx * dx + dz * dz;
-        if (d2 < sepRadiusSq && d2 > 0.001) {
-          const d = Math.sqrt(d2);
-          const push = (sepRadius - d) / d * sepForce * dt;
-          zombie.mesh.position.x += dx * push;
-          zombie.mesh.position.z += dz * push;
-        }
-      }
-    }
-    // Also check the 8 neighboring cells for zombies that straddle cell borders
-    for (let nci = 0; nci < _sepNeighborOffsets.length; nci++) {
-      const ncKey = cellKey + _sepNeighborOffsets[nci];
-      const ncList = _zombieSepGrid.get(ncKey);
-      if (!ncList) continue;
-      for (let ni = 0; ni < ncList.length; ni++) {
-        const j = ncList[ni];
-        if (j === i) continue;
-        const other = zombies[j];
-        if (!other) continue;
-        const dx = zombie.mesh.position.x - other.mesh.position.x;
-        const dz = zombie.mesh.position.z - other.mesh.position.z;
-        const d2 = dx * dx + dz * dz;
-        if (d2 < sepRadiusSq && d2 > 0.001) {
-          const d = Math.sqrt(d2);
-          const push = (sepRadius - d) / d * sepForce * dt;
-          zombie.mesh.position.x += dx * push;
-          zombie.mesh.position.z += dz * push;
-        }
+    for (let j = 0; j < zombies.length; j++) {
+      if (j === i) continue;
+      const other = zombies[j];
+      const dx = zombie.mesh.position.x - other.mesh.position.x;
+      const dz = zombie.mesh.position.z - other.mesh.position.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < sepRadiusSq && d2 > 0.001) {
+        const d = Math.sqrt(d2);
+        const push = (sepRadius - d) / d * sepForce * dt;
+        zombie.mesh.position.x += dx * push;
+        zombie.mesh.position.z += dz * push;
       }
     }
 
@@ -4776,9 +4567,7 @@ function spawnAcidSpit(from, to) {
   const acid = new THREE.Mesh(_acidSpitGeo, _acidSpitMat);
   acid.position.copy(from);
   scene.add(acid);
-  // Velocity stored on record — needs own Vector3 but direction calc uses pool
-  const velDir = getV3().subVectors(to, from).normalize();
-  const velocity = new THREE.Vector3().copy(velDir).multiplyScalar(18);
+  const velocity = new THREE.Vector3().subVectors(to, from).normalize().multiplyScalar(18);
   acidProjectiles.push({ mesh: acid, velocity, time: 0, duration: 0.8 });
 }
 
@@ -4988,11 +4777,7 @@ function closeInventory() {
   if (!gameOver) canvas.requestPointerLock();
 }
 
-let _hudMatTimer = 0;
-function updateHUDMaterials(dt) {
-  _hudMatTimer -= dt;
-  if (_hudMatTimer > 0) return; // throttle to ~10 Hz
-  _hudMatTimer = 0.1;
+function updateHUDMaterials() {
   if (extraMetaEl) {
     const m = materials;
     const materialStr = `S:${m.scrap} W:${m.wood} M:${m.metal} C:${m.cloth} Ch:${m.chemicals}`;
@@ -5077,8 +4862,8 @@ function ejectShell(weaponName) {
   );
 
   // Eject from right side of weapon, roughly at camera position
-  const ejectPos = getV3().copy(player.position);
-  const rightDir = getV3().set(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  const ejectPos = player.position.clone();
+  const rightDir = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
   ejectPos.addScaledVector(rightDir, 0.25);
   ejectPos.y += 1.4;
 
@@ -5088,11 +4873,9 @@ function ejectShell(weaponName) {
   scene.add(shell);
 
   // Velocity: outward to the right, slightly up, and backward
-  // These need to be new Vector3s because they're stored on the particle record
-  const velocity = new THREE.Vector3().copy(rightDir).multiplyScalar(1.5 + Math.random() * 1.5);
+  const velocity = rightDir.clone().multiplyScalar(1.5 + Math.random() * 1.5);
   velocity.y = 2.5 + Math.random() * 1.5;
-  const backDir = getV3().set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
-  velocity.addScaledVector(backDir, 0.8 + Math.random() * 0.5);
+  velocity.add(new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw)).multiplyScalar(0.8 + Math.random() * 0.5));
 
   const rotVel = new THREE.Vector3(
     (Math.random() - 0.5) * 15,
@@ -5117,7 +4900,7 @@ function ejectShell(weaponName) {
 function spawnFireParticles(position, count = 12) {
   const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
   for (let i = 0; i < toSpawn; i++) {
-    const dir = getV3().set((Math.random() - 0.5) * 2, 0.5 + Math.random() * 2, (Math.random() - 0.5) * 2).normalize();
+    const dir = new THREE.Vector3((Math.random() - 0.5) * 2, 0.5 + Math.random() * 2, (Math.random() - 0.5) * 2).normalize();
     const isOrange = Math.random() < 0.6;
     const mat = _getParticleMat(isOrange ? "fireOrange" : "fireYellow", isOrange ? 0xff4400 : 0xffaa00);
     mat.opacity = 0.9;
@@ -5138,7 +4921,7 @@ function spawnFireParticles(position, count = 12) {
 function spawnSparks(position, count = 8) {
   const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
   for (let i = 0; i < toSpawn; i++) {
-    const dir = getV3().set((Math.random() - 0.5) * 2, Math.random() * 2, (Math.random() - 0.5) * 2).normalize();
+    const dir = new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * 2, (Math.random() - 0.5) * 2).normalize();
     const mat = _getParticleMat("spark", 0x88ccff);
     const p = new THREE.Mesh(_pGeoSpark, mat);
     p.position.copy(position);
@@ -5174,13 +4957,11 @@ function spawnBurningParticle(position) {
   });
 }
 
-/** Scratch direction vectors for terrain-impact dust — avoids per-call alloc. */
-
 /** Small dust puff when a bullet hits terrain — adds a lot of visual feedback. */
 function spawnTerrainImpactDust(position) {
   const toSpawn = Math.min(5, MAX_PARTICLES - particles.length);
   for (let i = 0; i < toSpawn; i++) {
-    const dir = getV3().set(
+    const dir = new THREE.Vector3(
       (Math.random() - 0.5) * 1.5,
       0.6 + Math.random() * 1.2,
       (Math.random() - 0.5) * 1.5,
@@ -5549,26 +5330,14 @@ function updateHud(dt) {
   }
   if (extraMetaEl) {
     const throwStr = `🔥${molotovCount} 💥${grenadeCount} ⛏${landMineCount} 🗡${spikeTrapCount}`;
-    // Build downed info without filter/map/join allocations
-    let downedInfo = "";
-    for (let ti = 0; ti < teammates.length; ti++) {
-      if (teammates[ti].downed) {
-        if (downedInfo) downedInfo += " ";
-        downedInfo += `⚠DOWN ${Math.ceil(teammates[ti].downedTimer)}s`;
-      }
-    }
+    const downedInfo = teammates.filter(m => m.downed).map((m, i) => `⚠DOWN ${Math.ceil(m.downedTimer)}s`).join(" ");
     extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}${downedInfo ? ` | ${downedInfo}` : ""}`;
   }
   if (skillMetaEl) {
-    // Build active skills string without filter/map/join allocations
-    let activeSkills = "";
-    const skillArr = Object.values(skills);
-    for (let si = 0; si < skillArr.length; si++) {
-      if (skillArr[si].level > 0) {
-        if (activeSkills) activeSkills += ", ";
-        activeSkills += `${skillArr[si].name} ${skillArr[si].level}`;
-      }
-    }
+    const activeSkills = Object.values(skills)
+      .filter((s) => s.level > 0)
+      .map((s) => `${s.name} ${s.level}`)
+      .join(", ");
     const xpTarget = 120 + skillPoints * 40;
     const globalLvl = getLevel(playerProgression);
     const globalXp = playerProgression.xp || 0;
@@ -5737,16 +5506,13 @@ function collectObjectiveCompassTargets() {
   return targets;
 }
 
-/** Reusable object for objective compass best-target — avoids spread allocation. */
-const _compassBest = { label: "", position: null, urgency: 0, dx: 0, dz: 0, distance: 0 };
-
 function updateObjectiveCompass() {
   if (!objectiveCompassEl || gameState !== "PLAYING" || gameOver) {
     if (objectiveCompassEl) objectiveCompassEl.classList.remove("is-visible");
     return;
   }
 
-  let hasBest = false;
+  let best = null;
   let bestScore = -Infinity;
   for (const target of collectObjectiveCompassTargets()) {
     const dx = target.position.x - player.position.x;
@@ -5755,16 +5521,9 @@ function updateObjectiveCompass() {
     const score = target.urgency * 1000 - distance;
     if (score > bestScore) {
       bestScore = score;
-      _compassBest.label = target.label;
-      _compassBest.position = target.position;
-      _compassBest.urgency = target.urgency;
-      _compassBest.dx = dx;
-      _compassBest.dz = dz;
-      _compassBest.distance = distance;
-      hasBest = true;
+      best = { ...target, dx, dz, distance };
     }
   }
-  const best = hasBest ? _compassBest : null;
 
   if (!best) {
     objectiveCompassEl.classList.remove("is-visible");
@@ -5796,11 +5555,7 @@ function renderWeaponSlotsHUD() {
 
 // ─── Enemy Health Bars ────────────────────────────────────────────────────────
 const _hpProjVec = new THREE.Vector3();
-let _healthBarFrameGate = 0;
 function drawEnemyHealthBars() {
-  // Drawing bars is canvas-heavy; running every other frame smooths spikes.
-  _healthBarFrameGate = (_healthBarFrameGate + 1) % 2;
-  if (_healthBarFrameGate !== 0) return;
   hpBarCtx.clearRect(0, 0, hpBarCanvas.width, hpBarCanvas.height);
   if (gameState !== "PLAYING" || gameOver) return;
   const w = hpBarCanvas.width;
@@ -5811,9 +5566,8 @@ function drawEnemyHealthBars() {
     const showBar = zombie.isSpecial || zombie.isBoss || zombie.type === "juggernaut" || zombie.type === "boomer" || zombie.type === "screamer";
     if (!showBar) continue;
     // Only draw if within visual range
-    const dx = zombie.mesh.position.x - player.position.x;
-    const dz = zombie.mesh.position.z - player.position.z;
-    if ((dx * dx + dz * dz) > 1600) continue;
+    const dist = zombie.mesh.position.distanceTo(player.position);
+    if (dist > 40) continue;
     const headY = zombie.isBoss ? 2.55 : 2.55;
     _hpProjVec.set(zombie.mesh.position.x, zombie.mesh.position.y + headY, zombie.mesh.position.z);
     _hpProjVec.project(camera);
@@ -5852,9 +5606,8 @@ function drawEnemyHealthBars() {
   const bBarH = 4;
   for (const barricade of barricades) {
     if (barricade.hp >= barricade.maxHp) continue;
-    const bdx = barricade.mesh.position.x - player.position.x;
-    const bdz = barricade.mesh.position.z - player.position.z;
-    if ((bdx * bdx + bdz * bdz) > 625) continue;
+    const dist = barricade.mesh.position.distanceTo(player.position);
+    if (dist > 25) continue;
     _hpProjVec.set(barricade.mesh.position.x, barricade.mesh.position.y + 2.2, barricade.mesh.position.z);
     _hpProjVec.project(camera);
     if (_hpProjVec.z > 1) continue;
@@ -5879,9 +5632,8 @@ function drawEnemyHealthBars() {
   const tBarW = 36;
   const tBarH = 4;
   for (const mate of teammates) {
-    const tdx = mate.mesh.position.x - player.position.x;
-    const tdz = mate.mesh.position.z - player.position.z;
-    if ((tdx * tdx + tdz * tdz) > 900) continue;
+    const dist = mate.mesh.position.distanceTo(player.position);
+    if (dist > 30) continue;
     _hpProjVec.set(mate.mesh.position.x, mate.mesh.position.y + 2.6, mate.mesh.position.z);
     _hpProjVec.project(camera);
     if (_hpProjVec.z > 1) continue;
@@ -5972,9 +5724,7 @@ function updateFloatingDamageNums(dt) {
     n.life += dt;
     if (n.life >= n.maxLife) {
       n.el.remove();
-      const fdLast = floatingDamageNums.length - 1;
-      if (i !== fdLast) floatingDamageNums[i] = floatingDamageNums[fdLast];
-      floatingDamageNums.length = fdLast;
+      floatingDamageNums.splice(i, 1);
       continue;
     }
     // Re-project to follow the world position (handles camera movement)
@@ -6027,9 +5777,7 @@ function updateBloodDecals(dt) {
     if (d.life <= 0) {
       scene.remove(d.mesh);
       d.mesh.material.dispose();
-      const bdLast = bloodDecals.length - 1;
-      if (i !== bdLast) bloodDecals[i] = bloodDecals[bdLast];
-      bloodDecals.length = bdLast;
+      bloodDecals.splice(i, 1);
       continue;
     }
     // Fade out across the last 4 seconds of life so they don't pop out.
@@ -6041,7 +5789,7 @@ function updateBloodDecals(dt) {
 function spawnBloodParticles(position, count = 6) {
   const toSpawn = Math.min(count, MAX_PARTICLES - particles.length);
   for (let i = 0; i < toSpawn; i++) {
-    const dir = getV3().set(
+    const dir = new THREE.Vector3(
       (Math.random() - 0.5) * 2,
       0.2 + Math.random() * 1.8,
       (Math.random() - 0.5) * 2,
@@ -6079,10 +5827,7 @@ function updateParticles(dt) {
         disposeOwnedObject3D(p.mesh);
         disposedThisFrame++;
       }
-      // Swap-and-pop: O(1) instead of O(N) splice
-      const last = particles.length - 1;
-      if (i !== last) particles[i] = particles[last];
-      particles.length = last;
+      particles.splice(i, 1);
       continue;
     }
     const t = p.life / p.maxLife;
@@ -6138,7 +5883,7 @@ function createExplosion(position, radius, damage) {
   // Debris particles — use shared geometry to avoid geometry allocation per particle
   const debrisCount = Math.min(18, MAX_PARTICLES - particles.length);
   for (let i = 0; i < debrisCount; i++) {
-    const dir = getV3().set(
+    const dir = new THREE.Vector3(
       (Math.random() - 0.5) * 2,
       Math.random() * 2.8,
       (Math.random() - 0.5) * 2,
@@ -6166,7 +5911,7 @@ function createExplosion(position, radius, damage) {
   scene.add(flash);
   particles.push({
     mesh: flash,
-    velocity: getV3(),
+    velocity: new THREE.Vector3(),
     life: 0.3,
     maxLife: 0.3,
     gravity: false,
@@ -6195,10 +5940,8 @@ function createExplosion(position, radius, damage) {
 }
 
 // ─── Grenades / crafted throwables ────────────────────────────────────────────
-/** Scratch vector for throw direction — reused across throw calls. */
-const _throwDirScratch = new THREE.Vector3();
 function getThrowDirection() {
-  return _throwDirScratch.set(
+  return new THREE.Vector3(
     -Math.sin(player.yaw) * Math.cos(player.pitch),
     Math.sin(player.pitch) + 0.3,
     -Math.cos(player.yaw) * Math.cos(player.pitch),
@@ -8041,7 +7784,6 @@ function animate(nowMs) {
       lastStreamChunkX = streamChunkX;
       lastStreamChunkZ = streamChunkZ;
     }
-    drainChunkBuildQueue();
     updateLastSafePlayerPosition();
     updateZombies(dt);
     // If a zombie killed the player this frame, skip all further combat updates.
@@ -8088,9 +7830,6 @@ function animate(nowMs) {
     } // end if (!gameOver) combat block
   }
 
-  // Consume accumulated mouse input once per frame for consistent look feel
-  _consumeMouseInput();
-
   const adsFov = isADS ? 48 : 75;
   camera.fov += (adsFov - camera.fov) * Math.min(1, dt * 13);
   camera.updateProjectionMatrix();
@@ -8104,14 +7843,12 @@ function animate(nowMs) {
     camera.position.z += Math.cos(screenShakeTime * 19.8 + 2.7) * sh * 0.85;
   }
   updateWeapon(dt);
-  updateHUDMaterials(frameDt);
+  updateHUDMaterials();
   updateHud(frameDt);
   updateFloatingDamageNums(dt);
   updateVehicleHud();
   renderer.render(scene, camera);
   drawEnemyHealthBars();
-  // Adaptive quality: monitor frame times and adjust rendering quality
-  _aqTick(frameDt);
   requestAnimationFrame(animate);
 }
 
@@ -8145,33 +7882,14 @@ document.addEventListener("pointerlockchange", () => {
   }
 });
 
-/** Mouse accumulator for sub-frame input — events fire at OS poll rate which may
- *  differ from rAF rate. Accumulate raw deltas and consume them once per render
- *  frame for perfectly smooth, frame-rate-independent look. */
-let _mouseAccumX = 0;
-let _mouseAccumY = 0;
-
 window.addEventListener("mousemove", (e) => {
   if (!pointerLocked) return;
-  _mouseAccumX += e.movementX;
-  _mouseAccumY += e.movementY;
-});
-
-/** Consume accumulated mouse input once per frame — called from animate(). */
-function _consumeMouseInput() {
-  if (_mouseAccumX === 0 && _mouseAccumY === 0) return;
-  const baseSensX = 0.0024;
-  const baseSensY = 0.0021;
-  // ADS reduces sensitivity for precise aiming (40% of hip-fire)
-  const adsMult = isADS ? 0.4 : 1.0;
-  player.yaw -= _mouseAccumX * baseSensX * adsMult;
-  player.pitch -= _mouseAccumY * baseSensY * adsMult;
+  player.yaw -= e.movementX * 0.0024;
+  player.pitch -= e.movementY * 0.0021;
   player.pitch = Math.max(-1.35, Math.min(1.35, player.pitch));
-  lookSwayX += _mouseAccumX;
-  lookSwayY += _mouseAccumY;
-  _mouseAccumX = 0;
-  _mouseAccumY = 0;
-}
+  lookSwayX += e.movementX;
+  lookSwayY += e.movementY;
+});
 
 function handleReloadKeyCapture(e) {
   if (gameState !== "PLAYING" || e.code !== "KeyR") return;
@@ -8183,22 +7901,20 @@ function handleReloadKeyCapture(e) {
 
 window.addEventListener("keydown", handleReloadKeyCapture, true);
 
-/** Hoisted gameplay key set — avoids allocating a new Set on every keypress. */
-const _gameplayKeys = new Set([
-  "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
-  "KeyQ", "KeyE", "KeyF", "KeyG", "KeyH", "KeyJ", "KeyK", "KeyL",
-  "KeyM", "KeyN", "KeyP", "KeyT", "KeyU", "KeyV", "KeyB", "KeyC",
-  "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7",
-  "Tab",
-]);
-
 window.addEventListener("keydown", (e) => {
   if (!audioSystem.unlocked) {
     // First keyboard input should unlock audio context on browsers that gate autoplay.
     void ensureAudioUnlocked();
   }
   if (gameState === "PLAYING") {
-    if (_gameplayKeys.has(e.code)) e.preventDefault();
+    const gameplayKeys = new Set([
+      "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
+      "KeyQ", "KeyE", "KeyF", "KeyG", "KeyH", "KeyJ", "KeyK", "KeyL",
+      "KeyM", "KeyN", "KeyP", "KeyT", "KeyU", "KeyV", "KeyB", "KeyC",
+      "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7",
+      "Tab",
+    ]);
+    if (gameplayKeys.has(e.code)) e.preventDefault();
   }
   if (gameState === "PLAYING" && e.code === "KeyR") {
     e.preventDefault();
@@ -8325,7 +8041,7 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY_PIXEL_RATIO_CAP));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });
 
 (async function bootstrap() {
