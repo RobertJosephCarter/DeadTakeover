@@ -2405,7 +2405,7 @@ function makeChunk(cx, cz) {
     cityBuildingTemplates.length > 0 &&
     (activeMapConfig.cityBuildingsPerChunk || 0) > 0
   ) {
-    const n = Math.max(1, Math.floor((activeMapConfig.cityBuildingsPerChunk || 0) * 0.6));
+    const n = Math.max(1, Math.floor((activeMapConfig.cityBuildingsPerChunk || 0) * 0.35));
     for (let bi = 0; bi < n; bi += 1) {
       const tx = cx * chunkSize + (Math.random() - 0.5) * (chunkSize - 14);
       const tz = cz * chunkSize + (Math.random() - 0.5) * (chunkSize - 14);
@@ -2458,47 +2458,47 @@ function placeMapProps(cx, cz) {
   const half = chunkSize * 0.5;
 
   // Vehicles — 2-3 per chunk, parked along streets at random rotations.
-  const vehicleCount = 1 + Math.floor(Math.random() * 2);
+  const vehicleCount = Math.random() < 0.55 ? 1 : 0;
   for (let i = 0; i < vehicleCount; i += 1) {
     const id = vehicles[Math.floor(Math.random() * vehicles.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 8);
     const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 8);
     if (Math.hypot(x, z) < 18 || !isCircleClearOfStatics(x, z, 2.5)) continue;
-    spawnPropAt(id, x, z, Math.random() * Math.PI * 2);
+    spawnPropAt(id, x, z, Math.random() * Math.PI * 2, true);
   }
 
   // Heavy props — 3-5 per chunk.
-  const heavyCount = 2 + Math.floor(Math.random() * 2);
+  const heavyCount = 1 + Math.floor(Math.random() * 2);
   for (let i = 0; i < heavyCount; i += 1) {
     const id = heavyProps[Math.floor(Math.random() * heavyProps.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 4);
     const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 4);
     if (Math.hypot(x, z) < 14 || !isCircleClearOfStatics(x, z, 1.5)) continue;
-    spawnPropAt(id, x, z, Math.random() * Math.PI * 2);
+    spawnPropAt(id, x, z, Math.random() * Math.PI * 2, true);
   }
 
   // Barricades — 1-2 per chunk (fences strewn around).
-  const barricadeCount = Math.random() < 0.6 ? 1 : 0;
+  const barricadeCount = Math.random() < 0.25 ? 1 : 0;
   for (let i = 0; i < barricadeCount; i += 1) {
     const id = barricades[Math.floor(Math.random() * barricades.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 4);
     const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 4);
     if (Math.hypot(x, z) < 14 || !isCircleClearOfStatics(x, z, 1.5)) continue;
-    spawnPropAt(id, x, z, Math.random() * Math.PI * 2);
+    spawnPropAt(id, x, z, Math.random() * Math.PI * 2, true);
   }
 
   // Decor — 4-6 per chunk (cones, lamps, debris). Cheap, no colliders for most.
-  const decorCount = 2 + Math.floor(Math.random() * 3);
+  const decorCount = Math.random() < 0.6 ? 1 : 0;
   for (let i = 0; i < decorCount; i += 1) {
     const id = decor[Math.floor(Math.random() * decor.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 2);
     const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 2);
     if (Math.hypot(x, z) < 12 || !isCircleClearOfStatics(x, z, 1.0)) continue;
-    spawnPropAt(id, x, z, Math.random() * Math.PI * 2);
+    spawnPropAt(id, x, z, Math.random() * Math.PI * 2, false);
   }
 
   // Toxic barrels — ~30% chance per chunk, 1 barrel
-  if (Math.random() < 0.3) {
+  if (Math.random() < 0.12) {
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 6);
     const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 6);
     if (Math.hypot(x, z) >= 16 && isCircleClearOfStatics(x, z, 1.5)) {
@@ -2507,7 +2507,7 @@ function placeMapProps(cx, cz) {
   }
 
   // Loot crates — ~25% chance per chunk, 1 crate
-  if (Math.random() < 0.25) {
+  if (Math.random() < 0.1) {
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 6);
     const z = cellOriginZ + (Math.random() - 0.5) * (chunkSize - 6);
     if (Math.hypot(x, z) >= 20 && isCircleClearOfStatics(x, z, 1.2)) {
@@ -2519,7 +2519,7 @@ function placeMapProps(cx, cz) {
 /** Spawn a single GLB prop at world (x, z) using the registry. The prop is
  *  added to cityPropGroups so it gets cleaned up when the chunk unloads, and
  *  registered as a static collider if the registry entry has a collider. */
-function spawnPropAt(id, x, z, yaw) {
+function spawnPropAt(id, x, z, yaw, registerCollider = true) {
   const y = terrainHeight(x, z);
   spawnModel(id, scene, { x, y, z, yaw }).then((group) => {
     if (!group) return;
@@ -2530,7 +2530,7 @@ function spawnPropAt(id, x, z, yaw) {
     cityPropGroups.push(group);
     // Block sight + bullets on solid props (vehicles, barrels, fences).
     const def = getModelDef(id);
-    if (def && def.collider) {
+    if (registerCollider && def && def.collider) {
       visionBlockers.push(group);
       registerStaticCollider(group, def.collider.radius || 0.5, id);
     }

@@ -113,7 +113,7 @@ export const WORLD_MAPS = [
     heightAmp: 0,
     treesPerChunk: 0,
     structureChance: 0,
-    cityBuildingsPerChunk: 5,
+    cityBuildingsPerChunk: 3,
     useCityGroundTexture: true,
     groundTint: 0x8f9399,
     groundFill: "#454a52",
