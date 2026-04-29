@@ -562,6 +562,7 @@ let cityStreetDiffuse = null;
 const groundChunks = [];
 const groundChunkMap = new Map();
 const chunkBuildQueue = [];
+let chunkBuildQueueHead = 0;
 const queuedChunkKeys = new Set();
 const trees = [];
 const structureGroups = [];
@@ -698,6 +699,7 @@ const chunkRadius = 4;
 const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 24, 24);
 const CHUNK_STREAM_BUDGET = 4;
 const CHUNK_PREWARM_BUDGET = 20;
+const CHUNK_PREWARM_SYNC_DRAIN = 4;
 const CHUNK_STREAM_BOOST_SECONDS = 8;
 const CHUNK_BUILD_DRAIN_BASE = 1;
 const CHUNK_BUILD_DRAIN_BOOST = 3;
@@ -999,6 +1001,7 @@ function killPlayer(reason = "You died.") {
 /** Returns true if the straight segment A→B is blocked by any visionBlocker. */
 const _segDir = new THREE.Vector3();
 const _segRay = new THREE.Raycaster();
+const _segHits = [];
 function segmentBlockedByScenery(from, to) {
   _segDir.subVectors(to, from);
   const dist = _segDir.length();
@@ -1006,7 +1009,9 @@ function segmentBlockedByScenery(from, to) {
   _segDir.normalize();
   _segRay.set(from, _segDir);
   _segRay.far = dist;
-  return _segRay.intersectObjects(visibleVisionBlockers, true).length > 0;
+  _segHits.length = 0;
+  _segRay.intersectObjects(visibleVisionBlockers, true, _segHits);
+  return _segHits.length > 0;
 }
 
 function updateAudioButtonLabel() {
@@ -1220,8 +1225,9 @@ function loadRun() {
         lastStreamChunkX = Number.NaN;
         lastStreamChunkZ = Number.NaN;
         chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
-        ensureChunks(CHUNK_PREWARM_BUDGET);
-        drainChunkBuildQueue(CHUNK_PREWARM_BUDGET);
+        const prewarmBudget = getChunkPrewarmBudget();
+        ensureChunks(prewarmBudget);
+        drainChunkBuildQueue(CHUNK_PREWARM_SYNC_DRAIN);
       }
     }
     player.yaw = Number.isFinite(save.playerYaw) ? save.playerYaw : player.yaw;
@@ -2235,7 +2241,7 @@ function preventUnexpectedSpawnTeleport() {
     lastStreamChunkZ = Number.NaN;
     chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
     ensureChunks();
-    drainChunkBuildQueue(CHUNK_PREWARM_BUDGET);
+    drainChunkBuildQueue(CHUNK_PREWARM_SYNC_DRAIN);
     camera.position.set(player.position.x, player.position.y, player.position.z);
     messageEl.textContent = "Blocked a bad spawn teleport.";
   }
@@ -2256,8 +2262,8 @@ function queueChunkBuild(cx, cz, key) {
 
 function drainChunkBuildQueue(maxBuilds = CHUNK_BUILD_DRAIN_BASE) {
   let built = 0;
-  while (built < maxBuilds && chunkBuildQueue.length > 0) {
-    const next = chunkBuildQueue.shift();
+  while (built < maxBuilds && chunkBuildQueueHead < chunkBuildQueue.length) {
+    const next = chunkBuildQueue[chunkBuildQueueHead++];
     if (!next) break;
     queuedChunkKeys.delete(next.key);
     if (!groundChunkMap.has(next.key)) {
@@ -2265,7 +2271,18 @@ function drainChunkBuildQueue(maxBuilds = CHUNK_BUILD_DRAIN_BASE) {
       built += 1;
     }
   }
+  if (chunkBuildQueueHead > 256 && chunkBuildQueueHead * 2 > chunkBuildQueue.length) {
+    chunkBuildQueue.splice(0, chunkBuildQueueHead);
+    chunkBuildQueueHead = 0;
+  } else if (chunkBuildQueueHead >= chunkBuildQueue.length) {
+    chunkBuildQueue.length = 0;
+    chunkBuildQueueHead = 0;
+  }
   return built;
+}
+
+function getChunkPrewarmBudget() {
+  return activeMapConfig.id === "outbreak_city" ? 10 : CHUNK_PREWARM_BUDGET;
 }
 
 function hasMissingChunksAround(pcx, pcz) {
@@ -2704,6 +2721,7 @@ function resetWorldForNewMap() {
   groundChunks.length = 0;
   groundChunkMap.clear();
   chunkBuildQueue.length = 0;
+  chunkBuildQueueHead = 0;
   queuedChunkKeys.clear();
   for (const t of trees) {
     scene.remove(t.group);
@@ -2957,8 +2975,9 @@ function resetWorldForNewMap() {
 
   applyActiveMapVisuals();
   applyAdaptiveQuality();
-  ensureChunks(CHUNK_PREWARM_BUDGET);
-  drainChunkBuildQueue(CHUNK_PREWARM_BUDGET);
+  const prewarmBudget = getChunkPrewarmBudget();
+  ensureChunks(prewarmBudget);
+  drainChunkBuildQueue(CHUNK_PREWARM_SYNC_DRAIN);
   initWeather();
   updateDayNight();
   for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
@@ -3294,6 +3313,7 @@ const _worldAxisY = new THREE.Vector3(0, 1, 0);
 const _teammateFollowTarget = new THREE.Vector3();
 const _teammateTargetPosition = new THREE.Vector3();
 const _teammateRetreatGoal = new THREE.Vector3();
+const _losHits = [];
 
 function hasLineOfSight(origin, targetPosition) {
   _losDirection.subVectors(targetPosition, origin);
@@ -3303,7 +3323,9 @@ function hasLineOfSight(origin, targetPosition) {
 
   _losRaycaster.set(origin, _losDirection);
   _losRaycaster.far = Math.max(0.01, distance - 0.15);
-  return _losRaycaster.intersectObjects(visibleVisionBlockers, true).length === 0;
+  _losHits.length = 0;
+  _losRaycaster.intersectObjects(visibleVisionBlockers, true, _losHits);
+  return _losHits.length === 0;
 }
 
 const _eyeVec = new THREE.Vector3();
@@ -8338,7 +8360,7 @@ window.addEventListener("resize", () => {
     }
     applyActiveMapVisuals();
     ensureChunks();
-    drainChunkBuildQueue(CHUNK_PREWARM_BUDGET);
+    drainChunkBuildQueue(CHUNK_PREWARM_SYNC_DRAIN);
     initWeather();
     updateDayNight();
     for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
