@@ -693,7 +693,7 @@ async function loadCityBuildingLibrary() {
 }
 const chunkSize = 60;
 const chunkRadius = 4;
-const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 48, 48);
+const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 24, 24);
 const CHUNK_STREAM_BUDGET = 4;
 const CHUNK_PREWARM_BUDGET = 20;
 const CHUNK_STREAM_BOOST_SECONDS = 8;
@@ -2337,11 +2337,9 @@ function makeChunk(cx, cz) {
     const h = terrainHeight(vx, vz);
     positions.setZ(i, h);
 
-    // Compute deterministic normals from the height function so neighboring chunks
-    // share the same shading at borders (avoids visible seam/glitch lines).
+    // Rotate world normal by +90deg around X into plane-local normal without allocations.
     const worldNormal = terrainNormal(vx, vz);
-    const localNormal = worldNormal.clone().applyAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
-    normals.setXYZ(i, localNormal.x, localNormal.y, localNormal.z);
+    normals.setXYZ(i, worldNormal.x, -worldNormal.z, worldNormal.y);
   }
   positions.needsUpdate = true;
   normals.needsUpdate = true;
@@ -2375,7 +2373,7 @@ function makeChunk(cx, cz) {
     cityBuildingTemplates.length > 0 &&
     (activeMapConfig.cityBuildingsPerChunk || 0) > 0
   ) {
-    const n = activeMapConfig.cityBuildingsPerChunk;
+    const n = Math.max(1, Math.floor((activeMapConfig.cityBuildingsPerChunk || 0) * 0.6));
     for (let bi = 0; bi < n; bi += 1) {
       const tx = cx * chunkSize + (Math.random() - 0.5) * (chunkSize - 14);
       const tz = cz * chunkSize + (Math.random() - 0.5) * (chunkSize - 14);
@@ -2428,7 +2426,7 @@ function placeMapProps(cx, cz) {
   const half = chunkSize * 0.5;
 
   // Vehicles — 2-3 per chunk, parked along streets at random rotations.
-  const vehicleCount = 2 + Math.floor(Math.random() * 2);
+  const vehicleCount = 1 + Math.floor(Math.random() * 2);
   for (let i = 0; i < vehicleCount; i += 1) {
     const id = vehicles[Math.floor(Math.random() * vehicles.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 8);
@@ -2438,7 +2436,7 @@ function placeMapProps(cx, cz) {
   }
 
   // Heavy props — 3-5 per chunk.
-  const heavyCount = 3 + Math.floor(Math.random() * 3);
+  const heavyCount = 2 + Math.floor(Math.random() * 2);
   for (let i = 0; i < heavyCount; i += 1) {
     const id = heavyProps[Math.floor(Math.random() * heavyProps.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 4);
@@ -2448,7 +2446,7 @@ function placeMapProps(cx, cz) {
   }
 
   // Barricades — 1-2 per chunk (fences strewn around).
-  const barricadeCount = 1 + Math.floor(Math.random() * 2);
+  const barricadeCount = Math.random() < 0.6 ? 1 : 0;
   for (let i = 0; i < barricadeCount; i += 1) {
     const id = barricades[Math.floor(Math.random() * barricades.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 4);
@@ -2458,7 +2456,7 @@ function placeMapProps(cx, cz) {
   }
 
   // Decor — 4-6 per chunk (cones, lamps, debris). Cheap, no colliders for most.
-  const decorCount = 4 + Math.floor(Math.random() * 3);
+  const decorCount = 2 + Math.floor(Math.random() * 3);
   for (let i = 0; i < decorCount; i += 1) {
     const id = decor[Math.floor(Math.random() * decor.length)];
     const x = cellOriginX + (Math.random() - 0.5) * (chunkSize - 2);
@@ -5555,7 +5553,7 @@ function updateHud(dt) {
   minimapRefreshTimer -= dt;
   if (minimapRefreshTimer <= 0) {
     drawMinimap();
-    minimapRefreshTimer = 0.1;
+    minimapRefreshTimer = adaptiveQuality.level >= 1 ? 0.22 : 0.14;
   }
 
   player.damageFlash = Math.max(0, player.damageFlash - dt * 1.5);
@@ -5885,7 +5883,7 @@ function maybeDrawEnemyHealthBars(dt) {
   enemyHealthBarsRefreshTimer -= dt;
   if (enemyHealthBarsRefreshTimer > 0) return;
   drawEnemyHealthBars();
-  enemyHealthBarsRefreshTimer = adaptiveQuality.level >= 1 ? 0.12 : 0.06;
+  enemyHealthBarsRefreshTimer = adaptiveQuality.level >= 1 ? 0.18 : 0.1;
 }
 
 // ─── Floating Damage Numbers ──────────────────────────────────────────────────
