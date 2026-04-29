@@ -561,6 +561,8 @@ let cityStreetDiffuse = null;
 
 const groundChunks = [];
 const groundChunkMap = new Map();
+const chunkBuildQueue = [];
+const queuedChunkKeys = new Set();
 const trees = [];
 const structureGroups = [];
 const cityPropGroups = [];
@@ -697,6 +699,8 @@ const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 24, 24);
 const CHUNK_STREAM_BUDGET = 4;
 const CHUNK_PREWARM_BUDGET = 20;
 const CHUNK_STREAM_BOOST_SECONDS = 8;
+const CHUNK_BUILD_DRAIN_BASE = 1;
+const CHUNK_BUILD_DRAIN_BOOST = 3;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
 const player = {
@@ -1217,6 +1221,7 @@ function loadRun() {
         lastStreamChunkZ = Number.NaN;
         chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
         ensureChunks(CHUNK_PREWARM_BUDGET);
+        drainChunkBuildQueue(CHUNK_PREWARM_BUDGET);
       }
     }
     player.yaw = Number.isFinite(save.playerYaw) ? save.playerYaw : player.yaw;
@@ -2230,6 +2235,7 @@ function preventUnexpectedSpawnTeleport() {
     lastStreamChunkZ = Number.NaN;
     chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
     ensureChunks();
+    drainChunkBuildQueue(CHUNK_PREWARM_BUDGET);
     camera.position.set(player.position.x, player.position.y, player.position.z);
     messageEl.textContent = "Blocked a bad spawn teleport.";
   }
@@ -2241,10 +2247,32 @@ function isTextureReady(tex) {
   return !!(tex && tex.image && tex.image.complete && tex.image.width > 0);
 }
 
+function queueChunkBuild(cx, cz, key) {
+  if (groundChunkMap.has(key) || queuedChunkKeys.has(key)) return false;
+  chunkBuildQueue.push({ cx, cz, key });
+  queuedChunkKeys.add(key);
+  return true;
+}
+
+function drainChunkBuildQueue(maxBuilds = CHUNK_BUILD_DRAIN_BASE) {
+  let built = 0;
+  while (built < maxBuilds && chunkBuildQueue.length > 0) {
+    const next = chunkBuildQueue.shift();
+    if (!next) break;
+    queuedChunkKeys.delete(next.key);
+    if (!groundChunkMap.has(next.key)) {
+      makeChunk(next.cx, next.cz);
+      built += 1;
+    }
+  }
+  return built;
+}
+
 function hasMissingChunksAround(pcx, pcz) {
   for (let x = pcx - chunkRadius; x <= pcx + chunkRadius; x += 1) {
     for (let z = pcz - chunkRadius; z <= pcz + chunkRadius; z += 1) {
-      if (!groundChunkMap.has(`${x},${z}`)) return true;
+      const key = `${x},${z}`;
+      if (!groundChunkMap.has(key) && !queuedChunkKeys.has(key)) return true;
     }
   }
   return false;
@@ -2522,8 +2550,7 @@ function ensureChunks(maxCreates = CHUNK_STREAM_BUDGET) {
         const x = pcx + dx;
         const z = pcz + dz;
         const key = `${x},${z}`;
-        if (!groundChunkMap.has(key)) {
-          makeChunk(x, z);
+        if (queueChunkBuild(x, z, key)) {
           created += 1;
         }
       }
@@ -2676,6 +2703,8 @@ function resetWorldForNewMap() {
   }
   groundChunks.length = 0;
   groundChunkMap.clear();
+  chunkBuildQueue.length = 0;
+  queuedChunkKeys.clear();
   for (const t of trees) {
     scene.remove(t.group);
     disposeTreeGroup(t.group);
@@ -2929,6 +2958,7 @@ function resetWorldForNewMap() {
   applyActiveMapVisuals();
   applyAdaptiveQuality();
   ensureChunks(CHUNK_PREWARM_BUDGET);
+  drainChunkBuildQueue(CHUNK_PREWARM_BUDGET);
   initWeather();
   updateDayNight();
   for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
@@ -8013,6 +8043,7 @@ function animate(nowMs) {
       lastStreamChunkX = streamChunkX;
       lastStreamChunkZ = streamChunkZ;
     }
+    drainChunkBuildQueue(streamBoostActive ? CHUNK_BUILD_DRAIN_BOOST : CHUNK_BUILD_DRAIN_BASE);
     updateLastSafePlayerPosition();
     updateZombies(dt);
     // If a zombie killed the player this frame, skip all further combat updates.
@@ -8307,6 +8338,7 @@ window.addEventListener("resize", () => {
     }
     applyActiveMapVisuals();
     ensureChunks();
+    drainChunkBuildQueue(CHUNK_PREWARM_BUDGET);
     initWeather();
     updateDayNight();
     for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
