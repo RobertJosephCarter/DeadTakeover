@@ -4420,7 +4420,10 @@ function updateZombies(dt) {
       zombie._burnTinted = false;
       if (zombie._burnOrigMats) {
         for (const entry of zombie._burnOrigMats) {
-          if (entry.mesh.material) entry.mesh.material.dispose();
+          // Only dispose the per-zombie clone. Never dispose shared base materials.
+          if (entry.mesh.material && entry.mesh.material !== entry.mat) {
+            entry.mesh.material.dispose();
+          }
           entry.mesh.material = entry.mat;
         }
         zombie._burnOrigMats = null;
