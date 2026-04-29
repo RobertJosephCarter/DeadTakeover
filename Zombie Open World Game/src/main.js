@@ -2714,6 +2714,7 @@ function resetWorldForNewMap() {
   clearPendingTimers();
   // Wipe the static collider table — every world object will be re-registered at spawn.
   staticColliders.length = 0;
+  staticColliderGrid.clear();
   for (const c of groundChunks) {
     scene.remove(c.mesh);
     c.mesh.geometry.dispose();
@@ -5336,9 +5337,72 @@ function preventTreeCollision() {
 // Each entry: { minX, maxX, minZ, maxZ, kind, ref } — ref is the group/mesh
 // so we can remove entries when a chunk unloads or a vehicle explodes.
 const staticColliders = [];
+const staticColliderGrid = new Map();
+const STATIC_COLLIDER_CELL_SIZE = 24;
+const _staticCandidateSet = new Set();
+const _staticCandidates = [];
 const PLAYER_RADIUS = 0.55;
 const ZOMBIE_RADIUS = 0.48;
 const VEHICLE_RADIUS = 1.6;
+
+function staticCellKey(gx, gz) {
+  return `${gx},${gz}`;
+}
+
+function addColliderToGrid(entry) {
+  const minGX = Math.floor(entry.minX / STATIC_COLLIDER_CELL_SIZE);
+  const maxGX = Math.floor(entry.maxX / STATIC_COLLIDER_CELL_SIZE);
+  const minGZ = Math.floor(entry.minZ / STATIC_COLLIDER_CELL_SIZE);
+  const maxGZ = Math.floor(entry.maxZ / STATIC_COLLIDER_CELL_SIZE);
+  entry.gridKeys = [];
+  for (let gx = minGX; gx <= maxGX; gx += 1) {
+    for (let gz = minGZ; gz <= maxGZ; gz += 1) {
+      const key = staticCellKey(gx, gz);
+      let bucket = staticColliderGrid.get(key);
+      if (!bucket) {
+        bucket = [];
+        staticColliderGrid.set(key, bucket);
+      }
+      bucket.push(entry);
+      entry.gridKeys.push(key);
+    }
+  }
+}
+
+function removeColliderFromGrid(entry) {
+  if (!entry?.gridKeys) return;
+  for (let i = 0; i < entry.gridKeys.length; i += 1) {
+    const key = entry.gridKeys[i];
+    const bucket = staticColliderGrid.get(key);
+    if (!bucket) continue;
+    const idx = bucket.indexOf(entry);
+    if (idx >= 0) bucket.splice(idx, 1);
+    if (bucket.length === 0) staticColliderGrid.delete(key);
+  }
+  entry.gridKeys.length = 0;
+}
+
+function getNearbyStaticColliders(px, pz, range) {
+  _staticCandidateSet.clear();
+  _staticCandidates.length = 0;
+  const minGX = Math.floor((px - range) / STATIC_COLLIDER_CELL_SIZE);
+  const maxGX = Math.floor((px + range) / STATIC_COLLIDER_CELL_SIZE);
+  const minGZ = Math.floor((pz - range) / STATIC_COLLIDER_CELL_SIZE);
+  const maxGZ = Math.floor((pz + range) / STATIC_COLLIDER_CELL_SIZE);
+  for (let gx = minGX; gx <= maxGX; gx += 1) {
+    for (let gz = minGZ; gz <= maxGZ; gz += 1) {
+      const bucket = staticColliderGrid.get(staticCellKey(gx, gz));
+      if (!bucket) continue;
+      for (let i = 0; i < bucket.length; i += 1) {
+        const entry = bucket[i];
+        if (_staticCandidateSet.has(entry)) continue;
+        _staticCandidateSet.add(entry);
+        _staticCandidates.push(entry);
+      }
+    }
+  }
+  return _staticCandidates;
+}
 
 function registerStaticCollider(obj, pad = 0, kind = "static") {
   obj.updateMatrixWorld(true);
@@ -5353,6 +5417,7 @@ function registerStaticCollider(obj, pad = 0, kind = "static") {
     ref: obj,
   };
   staticColliders.push(entry);
+  addColliderToGrid(entry);
   obj.userData.colliderEntry = entry;
   return entry;
 }
@@ -5360,6 +5425,7 @@ function registerStaticCollider(obj, pad = 0, kind = "static") {
 function removeStaticCollider(obj) {
   const entry = obj?.userData?.colliderEntry;
   if (!entry) return;
+  removeColliderFromGrid(entry);
   const idx = staticColliders.indexOf(entry);
   if (idx >= 0) staticColliders.splice(idx, 1);
   obj.userData.colliderEntry = null;
@@ -5371,8 +5437,9 @@ const COLLIDER_SKIP_RANGE = 50;
 function resolveCircleVsStatics(px, pz, radius) {
   let ox = px;
   let oz = pz;
-  for (let i = 0; i < staticColliders.length; i++) {
-    const c = staticColliders[i];
+  const candidates = getNearbyStaticColliders(ox, oz, COLLIDER_SKIP_RANGE + radius);
+  for (let i = 0; i < candidates.length; i += 1) {
+    const c = candidates[i];
     if (c.minX - ox > COLLIDER_SKIP_RANGE || ox - c.maxX > COLLIDER_SKIP_RANGE) continue;
     if (c.minZ - oz > COLLIDER_SKIP_RANGE || oz - c.maxZ > COLLIDER_SKIP_RANGE) continue;
 
@@ -5405,7 +5472,9 @@ function resolveCircleVsStatics(px, pz, radius) {
 }
 
 function isCircleClearOfStatics(px, pz, radius) {
-  for (const c of staticColliders) {
+  const candidates = getNearbyStaticColliders(px, pz, radius + STATIC_COLLIDER_CELL_SIZE);
+  for (let i = 0; i < candidates.length; i += 1) {
+    const c = candidates[i];
     const closestX = Math.max(c.minX, Math.min(px, c.maxX));
     const closestZ = Math.max(c.minZ, Math.min(pz, c.maxZ));
     const dx = px - closestX;
