@@ -694,8 +694,9 @@ async function loadCityBuildingLibrary() {
 const chunkSize = 60;
 const chunkRadius = 4;
 const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 48, 48);
-const CHUNK_STREAM_BUDGET = 2;
-const CHUNK_PREWARM_BUDGET = 12;
+const CHUNK_STREAM_BUDGET = 4;
+const CHUNK_PREWARM_BUDGET = 20;
+const CHUNK_STREAM_BOOST_SECONDS = 8;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
 const player = {
@@ -827,6 +828,7 @@ let enemyHealthBarsRefreshTimer = 0;
 let adaptiveQualityPollTimer = 0;
 let adaptiveQualityRecoverTimer = 0;
 let nextChunkMaintenanceAt = 0;
+let chunkStreamingBoostUntil = 0;
 let frameBudgetDebt = 0;
 const lastSafePlayerPosition = new THREE.Vector3(0, 1.8, 0);
 let allowSpawnPositionUntil = 0;
@@ -1209,6 +1211,7 @@ function loadRun() {
         markSpawnPositionAllowed();
         lastStreamChunkX = Number.NaN;
         lastStreamChunkZ = Number.NaN;
+        chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
         ensureChunks(CHUNK_PREWARM_BUDGET);
       }
     }
@@ -2221,6 +2224,7 @@ function preventUnexpectedSpawnTeleport() {
     clampPlayerToTerrainFloor();
     lastStreamChunkX = Number.NaN;
     lastStreamChunkZ = Number.NaN;
+    chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
     ensureChunks();
     camera.position.set(player.position.x, player.position.y, player.position.z);
     messageEl.textContent = "Blocked a bad spawn teleport.";
@@ -2722,6 +2726,7 @@ function resetWorldForNewMap() {
   // Force a fresh stream pass after teleport/reset.
   lastStreamChunkX = Number.NaN;
   lastStreamChunkZ = Number.NaN;
+  chunkStreamingBoostUntil = gameTime + CHUNK_STREAM_BOOST_SECONDS;
   player.shootCooldown = 0;
   player.bobTime = 0;
   player.activeWeapon = 0;
@@ -7992,9 +7997,12 @@ function animate(nowMs) {
     const streamChunkZ = Math.floor(player.position.z / chunkSize);
     const chunkMoved = streamChunkX !== lastStreamChunkX || streamChunkZ !== lastStreamChunkZ;
     const needsFill = hasMissingChunksAround(streamChunkX, streamChunkZ);
+    const streamBoostActive = gameTime < chunkStreamingBoostUntil;
+    const idleFillBudget = streamBoostActive ? 3 : 1;
+    const fillInterval = streamBoostActive ? 0.05 : 0.2;
     if (chunkMoved || (needsFill && gameTime >= nextChunkMaintenanceAt)) {
-      ensureChunks(chunkMoved ? CHUNK_STREAM_BUDGET : 1);
-      nextChunkMaintenanceAt = gameTime + (chunkMoved ? 0.05 : 0.2);
+      ensureChunks(chunkMoved ? CHUNK_STREAM_BUDGET : idleFillBudget);
+      nextChunkMaintenanceAt = gameTime + (chunkMoved ? 0.05 : fillInterval);
       lastStreamChunkX = streamChunkX;
       lastStreamChunkZ = streamChunkZ;
     }
