@@ -1149,7 +1149,7 @@ function startPlaying() {
 
 // ─── Save / Load Progress ────────────────────────────────────────────────────
 function hasSavedRun() {
-  return localStorage.getItem("zowg_save") !== null;
+  try { return localStorage.getItem("zowg_save") !== null; } catch { return false; }
 }
 
 function saveRun() {
@@ -2580,23 +2580,32 @@ function disposeOwnedObject3D(obj) {
 }
 
 function buildMapSelectUi() {
-  if (!mapGridEl) return;
-  mapGridEl.innerHTML = "";
-  for (const m of WORLD_MAPS) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "map-chip";
-    b.dataset.mapId = m.id;
-    b.innerHTML = `<span class="map-chip-name">${m.name}</span><span class="map-chip-blurb">${m.blurb}</span>`;
-    b.addEventListener("click", async () => {
-      pendingMapId = m.id;
-      localStorage.setItem("zowg_map", pendingMapId);
-      mapDirty = pendingMapId !== activeMapConfig.id;
-      if (m.id === "outbreak_city") await loadCityBuildingLibrary();
-      buildMapSelectUi();
-    });
-    if (m.id === pendingMapId) b.classList.add("is-active-map");
-    mapGridEl.appendChild(b);
+  if (!mapGridEl) {
+    console.warn("[DeadTakeover] buildMapSelectUi: map-grid element not found");
+    return;
+  }
+  try {
+    mapGridEl.innerHTML = "";
+    for (const m of WORLD_MAPS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "map-chip";
+      b.dataset.mapId = m.id;
+      b.innerHTML = `<span class="map-chip-name">${m.name}</span><span class="map-chip-blurb">${m.blurb}</span>`;
+      b.addEventListener("click", async () => {
+        pendingMapId = m.id;
+        try { localStorage.setItem("zowg_map", pendingMapId); } catch {}
+        mapDirty = pendingMapId !== activeMapConfig.id;
+        if (m.id === "outbreak_city") {
+          try { await loadCityBuildingLibrary(); } catch {}
+        }
+        buildMapSelectUi();
+      });
+      if (m.id === pendingMapId) b.classList.add("is-active-map");
+      mapGridEl.appendChild(b);
+    }
+  } catch (uiErr) {
+    console.error("[DeadTakeover] buildMapSelectUi error:", uiErr);
   }
 }
 
@@ -8202,44 +8211,57 @@ window.addEventListener("resize", () => {
 });
 
 (async function bootstrap() {
-  let akTemplate = null;
+  // Wrap entire early-init path so a single synchronous crash (GLTF refs,
+  // WebGL caps, garbage localStorage, etc.) never blocks the menu.  The
+  // game world is rebuilt cleanly when the player clicks Start anyway.
   try {
-    akTemplate = await ensureAk47TemplateRoot();
-  } catch {
-    akTemplate = null;
-  }
-  akTemplateRef = akTemplate;
+    let akTemplate = null;
+    try {
+      akTemplate = await ensureAk47TemplateRoot();
+    } catch {
+      akTemplate = null;
+    }
+    akTemplateRef = akTemplate;
 
-  let remingtonTemplate = null;
-  try {
-    remingtonTemplate = await ensureRemingtonTemplateRoot();
-  } catch {
-    remingtonTemplate = null;
-  }
-  remingtonTemplateRef = remingtonTemplate;
+    let remingtonTemplate = null;
+    try {
+      remingtonTemplate = await ensureRemingtonTemplateRoot();
+    } catch {
+      remingtonTemplate = null;
+    }
+    remingtonTemplateRef = remingtonTemplate;
 
-  let pistolTemplate = null;
-  try {
-    pistolTemplate = await ensurePistolTemplateRoot();
-  } catch {
-    pistolTemplate = null;
-  }
-  pistolTemplateRef = pistolTemplate;
+    let pistolTemplate = null;
+    try {
+      pistolTemplate = await ensurePistolTemplateRoot();
+    } catch {
+      pistolTemplate = null;
+    }
+    pistolTemplateRef = pistolTemplate;
 
-  if (pendingMapId === "outbreak_city" || activeMapConfig.id === "outbreak_city") {
-    await loadCityBuildingLibrary();
+    if (pendingMapId === "outbreak_city" || activeMapConfig.id === "outbreak_city") {
+      try { await loadCityBuildingLibrary(); } catch { /* city props optional */ }
+    }
+    applyActiveMapVisuals();
+    ensureChunks();
+    initWeather();
+    updateDayNight();
+    for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
+    for (let i = 0; i < 3; i += 1) {
+      teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplate, remingtonTemplate, pistolTemplate));
+    }
+    spawnVehiclesForMap();
+    syncPlayerAmmoFields(player);
+    updateAudioButtonLabel();
+  } catch (bootstrapErr) {
+    // Log the error so developers can diagnose the underlying issue, but
+    // keep going — the menu must render regardless so the player can still
+    // select a map and start a fresh game.
+    console.error("[DeadTakeover] bootstrap initialization error:", bootstrapErr);
   }
-  applyActiveMapVisuals();
-  ensureChunks();
-  initWeather();
-  updateDayNight();
-  for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
-  for (let i = 0; i < 3; i += 1) {
-    teammates.push(createTeammate(2 + i * 2.5, 2 + i, i, akTemplate, remingtonTemplate, pistolTemplate));
-  }
-  spawnVehiclesForMap();
-  syncPlayerAmmoFields(player);
-  updateAudioButtonLabel();
+
+  // Always build the menu, even if world init partially failed.
+  // resetWorldForNewMap() (called by Start) rebuilds everything from scratch.
   setMenuMode("title");
   messageEl.textContent = "Pick a map, then Start. Q swap, T team swap, P pause, M audio. B build, N switch build type.";
   animate(0);
@@ -8253,7 +8275,14 @@ startBtnEl.addEventListener("click", async () => {
     activeMapConfig = mapById(pendingMapId);
     mapDirty = false;
   }
-  resetWorldForNewMap();
+  try {
+    resetWorldForNewMap();
+  } catch (startErr) {
+    console.error("[DeadTakeover] resetWorldForNewMap failed:", startErr);
+    // Fall back to a clean page reload so the player isn't stuck.
+    window.location.reload();
+    return;
+  }
   canvas.requestPointerLock();
 });
 
@@ -8277,14 +8306,14 @@ continueBtnEl.addEventListener("click", async () => {
   await ensureAudioUnlocked();
 
   // Peek at the saved map so we reset the world for the correct one
-  const raw = localStorage.getItem("zowg_save");
   let savedMapId = null;
-  if (raw) {
-    try {
+  try {
+    const raw = localStorage.getItem("zowg_save");
+    if (raw) {
       const save = JSON.parse(raw);
       savedMapId = save.activeMapId;
-    } catch {}
-  }
+    }
+  } catch {}
 
   // Use saved map if available; otherwise fall back to the menu selection
   const targetMapId = savedMapId || pendingMapId;
@@ -8294,7 +8323,13 @@ continueBtnEl.addEventListener("click", async () => {
     mapDirty = false;
   }
 
-  resetWorldForNewMap();
+  try {
+    resetWorldForNewMap();
+  } catch (continueErr) {
+    console.error("[DeadTakeover] continue resetWorldForNewMap failed:", continueErr);
+    window.location.reload();
+    return;
+  }
   loadRun();
   canvas.requestPointerLock();
 });
