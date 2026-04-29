@@ -695,7 +695,7 @@ const chunkSize = 60;
 const chunkRadius = 4;
 const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 48, 48);
 const CHUNK_STREAM_BUDGET = 2;
-const CHUNK_PREWARM_BUDGET = 24;
+const CHUNK_PREWARM_BUDGET = 12;
 const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
 const player = {
@@ -826,6 +826,7 @@ let hudStatsRefreshTimer = 0;
 let enemyHealthBarsRefreshTimer = 0;
 let adaptiveQualityPollTimer = 0;
 let adaptiveQualityRecoverTimer = 0;
+let nextChunkMaintenanceAt = 0;
 let frameBudgetDebt = 0;
 const lastSafePlayerPosition = new THREE.Vector3(0, 1.8, 0);
 let allowSpawnPositionUntil = 0;
@@ -7990,8 +7991,10 @@ function animate(nowMs) {
     const streamChunkX = Math.floor(player.position.x / chunkSize);
     const streamChunkZ = Math.floor(player.position.z / chunkSize);
     const chunkMoved = streamChunkX !== lastStreamChunkX || streamChunkZ !== lastStreamChunkZ;
-    if (chunkMoved || hasMissingChunksAround(streamChunkX, streamChunkZ)) {
+    const needsFill = hasMissingChunksAround(streamChunkX, streamChunkZ);
+    if (chunkMoved || (needsFill && gameTime >= nextChunkMaintenanceAt)) {
       ensureChunks(chunkMoved ? CHUNK_STREAM_BUDGET : 1);
+      nextChunkMaintenanceAt = gameTime + (chunkMoved ? 0.05 : 0.2);
       lastStreamChunkX = streamChunkX;
       lastStreamChunkZ = streamChunkZ;
     }
