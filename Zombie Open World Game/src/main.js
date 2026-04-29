@@ -272,7 +272,7 @@ sun.position.set(30, 45, -10);
 sun.castShadow = true;
 sun.shadow.bias = -0.0002;
 sun.shadow.normalBias = 0.02;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(1024, 1024);
 sun.shadow.camera.near = 8;
 sun.shadow.camera.far = 130;
 sun.shadow.camera.left = -42;
@@ -905,6 +905,7 @@ function refreshVisibleVisionBlockers() {
   visibleVisionBlockers.length = 0;
   const origin = activeVehicle ? activeVehicle.mesh.position : player.position;
   const maxDistanceSq = 85 * 85;
+  const maxBlockers = 220;
   for (let i = 0; i < visionBlockers.length; i += 1) {
     const blocker = visionBlockers[i];
     if (!blocker?.parent && blocker !== camera) continue;
@@ -912,7 +913,10 @@ function refreshVisibleVisionBlockers() {
     if (!pos) continue;
     const dx = pos.x - origin.x;
     const dz = pos.z - origin.z;
-    if (dx * dx + dz * dz <= maxDistanceSq) visibleVisionBlockers.push(blocker);
+    if (dx * dx + dz * dz <= maxDistanceSq) {
+      visibleVisionBlockers.push(blocker);
+      if (visibleVisionBlockers.length >= maxBlockers) break;
+    }
   }
 }
 
@@ -2491,6 +2495,10 @@ function spawnPropAt(id, x, z, yaw) {
   const y = terrainHeight(x, z);
   spawnModel(id, scene, { x, y, z, yaw }).then((group) => {
     if (!group) return;
+    // City clutter shadows are expensive and add little gameplay value.
+    group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) obj.castShadow = false;
+    });
     cityPropGroups.push(group);
     // Block sight + bullets on solid props (vehicles, barrels, fences).
     const def = getModelDef(id);
@@ -7872,7 +7880,7 @@ function animate(nowMs) {
     visibleVisionBlockersRefreshTimer -= dt;
     if (visibleVisionBlockersRefreshTimer <= 0) {
       refreshVisibleVisionBlockers();
-      visibleVisionBlockersRefreshTimer = adaptiveQuality.level >= 1 ? 0.12 : 0.08;
+      visibleVisionBlockersRefreshTimer = adaptiveQuality.level >= 1 ? 0.28 : 0.18;
     }
 
     gameTime += dt;
@@ -7998,7 +8006,8 @@ function animate(nowMs) {
     const streamBoostActive = gameTime < chunkStreamingBoostUntil;
     const idleFillBudget = streamBoostActive ? 3 : 1;
     const fillInterval = streamBoostActive ? 0.05 : 0.2;
-    if (chunkMoved || (needsFill && gameTime >= nextChunkMaintenanceAt)) {
+    const canDoMaintenanceFill = streamBoostActive && gameTime >= nextChunkMaintenanceAt;
+    if (chunkMoved || (needsFill && canDoMaintenanceFill)) {
       ensureChunks(chunkMoved ? CHUNK_STREAM_BUDGET : idleFillBudget);
       nextChunkMaintenanceAt = gameTime + (chunkMoved ? 0.05 : fillInterval);
       lastStreamChunkX = streamChunkX;
