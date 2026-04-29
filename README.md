@@ -4,7 +4,7 @@ DeadTakeover is a browser-based open-world zombie survival FPS built with Three.
 
 ## Live Demo
 
-- Play now: `https://robertjosephcarter.github.io/ai-game-lab/games/zombie/`
+- Play now: `https://xrctz.github.io/ai-game-lab/games/zombie/`
 
 ## Repository Layout
 
