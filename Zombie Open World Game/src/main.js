@@ -256,7 +256,7 @@ scene.add(camera);
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(getAdaptivePixelRatio());
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -559,10 +559,12 @@ let groundDiffuse = createGroundTextureForMap(activeMapConfig);
 let cityStreetDiffuse = null;
 
 const groundChunks = [];
+const groundChunkMap = new Map();
 const trees = [];
 const structureGroups = [];
 const cityPropGroups = [];
 const visionBlockers = [];
+const visibleVisionBlockers = [];
 
 /** Bullet mesh + record pooling — fewer allocations on high fire-rate paths (see GC / object-pool guidance for JS game loops). */
 const bulletMeshPoolsByKey = new Map();
@@ -813,6 +815,14 @@ let minimapRefreshTimer = 0;
 let weaponHudRefreshTimer = 0;
 let missionHudRefreshTimer = 0;
 let objectiveCompassRefreshTimer = 0;
+let visibleVisionBlockersRefreshTimer = 0;
+let zombieAiUpdateCursor = 0;
+let zombieSeparationCursor = 0;
+let hudStatsRefreshTimer = 0;
+let enemyHealthBarsRefreshTimer = 0;
+let adaptiveQualityPollTimer = 0;
+let adaptiveQualityRecoverTimer = 0;
+let frameBudgetDebt = 0;
 const lastSafePlayerPosition = new THREE.Vector3(0, 1.8, 0);
 let allowSpawnPositionUntil = 0;
 const playerProgression = loadProgression();
@@ -828,6 +838,76 @@ const materials = {
 
 /** Weather system state — owned by ./world/weather.js */
 const weatherState = createWeather(scene);
+
+const adaptiveQuality = {
+  level: 0,
+  pixelRatios: [Math.min(window.devicePixelRatio, 1.25), 1, 0.85],
+  shadowsEnabled: true,
+  frameSamples: [],
+  averageFrameMs: 16.7,
+};
+
+function getAdaptivePixelRatio() {
+  const maxRatio = adaptiveQuality.pixelRatios[Math.min(adaptiveQuality.level, adaptiveQuality.pixelRatios.length - 1)];
+  return Math.min(window.devicePixelRatio, maxRatio);
+}
+
+function applyAdaptiveQuality() {
+  renderer.setPixelRatio(getAdaptivePixelRatio());
+  const enableShadows = adaptiveQuality.level < 2;
+  if (adaptiveQuality.shadowsEnabled !== enableShadows) {
+    adaptiveQuality.shadowsEnabled = enableShadows;
+    renderer.shadowMap.enabled = enableShadows;
+    sun.castShadow = enableShadows;
+  }
+}
+
+function sampleFrameTime(frameDt) {
+  const frameMs = frameDt * 1000;
+  if (!Number.isFinite(frameMs) || frameMs <= 0) return;
+  const samples = adaptiveQuality.frameSamples;
+  samples.push(frameMs);
+  if (samples.length > 60) samples.shift();
+  let total = 0;
+  for (let i = 0; i < samples.length; i += 1) total += samples[i];
+  adaptiveQuality.averageFrameMs = total / samples.length;
+}
+
+function updateAdaptiveQuality(frameDt) {
+  sampleFrameTime(frameDt);
+  adaptiveQualityPollTimer -= frameDt;
+  adaptiveQualityRecoverTimer -= frameDt;
+  if (adaptiveQualityPollTimer > 0) return;
+  adaptiveQualityPollTimer = 0.4;
+
+  if (adaptiveQuality.averageFrameMs > 24 && adaptiveQuality.level < 2) {
+    adaptiveQuality.level += 1;
+    adaptiveQualityRecoverTimer = 4;
+    applyAdaptiveQuality();
+    return;
+  }
+
+  if (adaptiveQuality.averageFrameMs < 17.5 && adaptiveQuality.level > 0 && adaptiveQualityRecoverTimer <= 0) {
+    adaptiveQuality.level -= 1;
+    adaptiveQualityRecoverTimer = 3;
+    applyAdaptiveQuality();
+  }
+}
+
+function refreshVisibleVisionBlockers() {
+  visibleVisionBlockers.length = 0;
+  const origin = activeVehicle ? activeVehicle.mesh.position : player.position;
+  const maxDistanceSq = 85 * 85;
+  for (let i = 0; i < visionBlockers.length; i += 1) {
+    const blocker = visionBlockers[i];
+    if (!blocker?.parent && blocker !== camera) continue;
+    const pos = blocker.position || blocker.getWorldPosition?.(getV3());
+    if (!pos) continue;
+    const dx = pos.x - origin.x;
+    const dz = pos.z - origin.z;
+    if (dx * dx + dz * dz <= maxDistanceSq) visibleVisionBlockers.push(blocker);
+  }
+}
 
 /** Barricade build mode */
 let buildMode = false;
@@ -911,7 +991,7 @@ function segmentBlockedByScenery(from, to) {
   _segDir.normalize();
   _segRay.set(from, _segDir);
   _segRay.far = dist;
-  return _segRay.intersectObjects(visionBlockers, true).length > 0;
+  return _segRay.intersectObjects(visibleVisionBlockers, true).length > 0;
 }
 
 function updateAudioButtonLabel() {
@@ -2197,6 +2277,8 @@ function makeStructure(x, z) {
 }
 
 function makeChunk(cx, cz) {
+  const chunkKey = `${cx},${cz}`;
+  if (groundChunkMap.has(chunkKey)) return;
   const mesh = new THREE.Mesh(chunkGeometry.clone(), groundMaterial);
   mesh.rotation.x = -Math.PI / 2;
   mesh.receiveShadow = true;
@@ -2219,7 +2301,9 @@ function makeChunk(cx, cz) {
   positions.needsUpdate = true;
   normals.needsUpdate = true;
   scene.add(mesh);
-  groundChunks.push({ cx, cz, mesh });
+  const chunkRecord = { cx, cz, mesh, key: chunkKey };
+  groundChunks.push(chunkRecord);
+  groundChunkMap.set(chunkKey, chunkRecord);
 
   const treeBudget =
     activeMapConfig.id === "outbreak_city" ? 0 : activeMapConfig.treesPerChunk;
@@ -2377,10 +2461,17 @@ function spawnPropAt(id, x, z, yaw) {
 function ensureChunks() {
   const pcx = Math.floor(player.position.x / chunkSize);
   const pcz = Math.floor(player.position.z / chunkSize);
+  let created = 0;
   for (let x = pcx - chunkRadius; x <= pcx + chunkRadius; x += 1) {
     for (let z = pcz - chunkRadius; z <= pcz + chunkRadius; z += 1) {
-      if (!groundChunks.some((c) => c.cx === x && c.cz === z)) makeChunk(x, z);
+      const key = `${x},${z}`;
+      if (!groundChunkMap.has(key)) {
+        makeChunk(x, z);
+        created += 1;
+        if (created >= 2) break;
+      }
     }
+    if (created >= 2) break;
   }
   // Unload chunks that moved out of range
   for (let i = groundChunks.length - 1; i >= 0; i -= 1) {
@@ -2388,6 +2479,7 @@ function ensureChunks() {
     if (Math.abs(c.cx - pcx) > chunkRadius + 1 || Math.abs(c.cz - pcz) > chunkRadius + 1) {
       scene.remove(c.mesh);
       c.mesh.geometry?.dispose();
+      groundChunkMap.delete(c.key);
       groundChunks.splice(i, 1);
     }
   }
@@ -2518,6 +2610,7 @@ function resetWorldForNewMap() {
     c.mesh.geometry.dispose();
   }
   groundChunks.length = 0;
+  groundChunkMap.clear();
   for (const t of trees) {
     scene.remove(t.group);
     disposeTreeGroup(t.group);
@@ -2768,6 +2861,7 @@ function resetWorldForNewMap() {
   missionGenerator.nextMissionIn = 30 + Math.random() * 30;
 
   applyActiveMapVisuals();
+  applyAdaptiveQuality();
   ensureChunks();
   initWeather();
   updateDayNight();
@@ -3113,7 +3207,7 @@ function hasLineOfSight(origin, targetPosition) {
 
   _losRaycaster.set(origin, _losDirection);
   _losRaycaster.far = Math.max(0.01, distance - 0.15);
-  return _losRaycaster.intersectObjects(visionBlockers, true).length === 0;
+  return _losRaycaster.intersectObjects(visibleVisionBlockers, true).length === 0;
 }
 
 const _eyeVec = new THREE.Vector3();
@@ -4168,8 +4262,15 @@ function updateZombies(dt) {
     }
   }
 
-  for (let i = zombies.length - 1; i >= 0; i -= 1) {
+  const zombieCount = zombies.length;
+  if (!zombieCount) return;
+  const fullStep = adaptiveQuality.level === 0 ? zombieCount : Math.max(12, Math.ceil(zombieCount * 0.55));
+  let processed = 0;
+  for (let pass = 0; pass < zombieCount && processed < fullStep; pass += 1) {
+    const i = (zombieAiUpdateCursor - pass + zombieCount) % zombieCount;
     const zombie = zombies[i];
+    if (!zombie) continue;
+    processed += 1;
     zombie.attackTimer -= dt;
     if (zombie.staggerTimer > 0) zombie.staggerTimer = Math.max(0, zombie.staggerTimer - dt);
     if (zombie.burnTimer > 0) {
@@ -4439,7 +4540,9 @@ function updateZombies(dt) {
     const sepRadius = 1.4;
     const sepRadiusSq = sepRadius * sepRadius;
     const sepForce = 2.5;
-    for (let j = 0; j < zombies.length; j++) {
+    const separationChecks = Math.min(zombies.length - 1, adaptiveQuality.level === 0 ? zombies.length - 1 : 10);
+    for (let step = 0; step < separationChecks; step += 1) {
+      const j = (zombieSeparationCursor + step) % zombies.length;
       if (j === i) continue;
       const other = zombies[j];
       const dx = zombie.mesh.position.x - other.mesh.position.x;
@@ -4452,6 +4555,7 @@ function updateZombies(dt) {
         zombie.mesh.position.z += dz * push;
       }
     }
+    zombieSeparationCursor = (zombieSeparationCursor + 3) % Math.max(1, zombies.length);
 
     if (toTarget.lengthSq() > 0.0001) zombie.mesh.rotation.y = Math.atan2(toTarget.x, toTarget.z);
 
@@ -4556,6 +4660,7 @@ function updateZombies(dt) {
       }
     }
   }
+  zombieAiUpdateCursor = (zombieAiUpdateCursor + processed) % Math.max(1, zombies.length);
 }
 
 /** Shared geometry/material for acid spit projectiles — avoids per-spit allocations. */
@@ -4778,12 +4883,46 @@ function closeInventory() {
 }
 
 function updateHUDMaterials() {
+  if ((updateHUDMaterials._lastScore === score) &&
+      (updateHUDMaterials._lastMolotov === molotovCount) &&
+      (updateHUDMaterials._lastGrenades === grenadeCount) &&
+      (updateHUDMaterials._lastLandMines === landMineCount) &&
+      (updateHUDMaterials._lastSpikeTraps === spikeTrapCount) &&
+      (updateHUDMaterials._lastNoise === noiseMakerCount) &&
+      (updateHUDMaterials._lastCrouch === isCrouching) &&
+      (updateHUDMaterials._lastAds === isADS) &&
+      (updateHUDMaterials._lastMelee === (meleeCooldown > 0)) &&
+      (updateHUDMaterials._lastBuildMode === buildMode) &&
+      (updateHUDMaterials._lastBuildType === buildType) &&
+      (updateHUDMaterials._lastScrap === materials.scrap) &&
+      (updateHUDMaterials._lastWood === materials.wood) &&
+      (updateHUDMaterials._lastMetal === materials.metal) &&
+      (updateHUDMaterials._lastCloth === materials.cloth) &&
+      (updateHUDMaterials._lastChemicals === materials.chemicals)) {
+    return;
+  }
   if (extraMetaEl) {
     const m = materials;
     const materialStr = `S:${m.scrap} W:${m.wood} M:${m.metal} C:${m.cloth} Ch:${m.chemicals}`;
     const throwStr = `🔥${molotovCount} 💥${grenadeCount} ⛏${landMineCount} 🗡${spikeTrapCount}`;
     extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | ${materialStr} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}${buildMode ? ` | [BUILD:${buildType.toUpperCase()}]` : ""}`;
   }
+  updateHUDMaterials._lastScore = score;
+  updateHUDMaterials._lastMolotov = molotovCount;
+  updateHUDMaterials._lastGrenades = grenadeCount;
+  updateHUDMaterials._lastLandMines = landMineCount;
+  updateHUDMaterials._lastSpikeTraps = spikeTrapCount;
+  updateHUDMaterials._lastNoise = noiseMakerCount;
+  updateHUDMaterials._lastCrouch = isCrouching;
+  updateHUDMaterials._lastAds = isADS;
+  updateHUDMaterials._lastMelee = meleeCooldown > 0;
+  updateHUDMaterials._lastBuildMode = buildMode;
+  updateHUDMaterials._lastBuildType = buildType;
+  updateHUDMaterials._lastScrap = materials.scrap;
+  updateHUDMaterials._lastWood = materials.wood;
+  updateHUDMaterials._lastMetal = materials.metal;
+  updateHUDMaterials._lastCloth = materials.cloth;
+  updateHUDMaterials._lastChemicals = materials.chemicals;
 }
 
 function updateVehicleHud() {
@@ -5313,11 +5452,36 @@ function updateHud(dt) {
   staminaFillEl.style.width = `${player.stamina}%`;
   syncPlayerAmmoFields(player);
   const activeWpn = getActiveWeapon(player);
-  const ammoTypeLabel = activeWpn.ammoType || (activeWpn.pellets ? "Shells" : "Ammo");
-  const ammoLabel = `${player.ammo}/${player.reserveAmmo} ${ammoTypeLabel}`;
-  const wpnNum = `[${player.activeWeapon + 1}]`;
-  const wpnUpg = activeWpn.upgrades && Object.keys(activeWpn.upgrades).length > 0 ? " +" : "";
-  statsMetaEl.textContent = `Map: ${activeMapConfig.name} | ${activeWpn.name}${wpnUpg} ${wpnNum} | ${ammoLabel} | Kills: ${player.kills} | Zombies: ${zombies.length} | Team: ${teammates.length + 1}`;
+  hudStatsRefreshTimer -= dt;
+  if (hudStatsRefreshTimer <= 0) {
+    const ammoTypeLabel = activeWpn.ammoType || (activeWpn.pellets ? "Shells" : "Ammo");
+    const ammoLabel = `${player.ammo}/${player.reserveAmmo} ${ammoTypeLabel}`;
+    const wpnNum = `[${player.activeWeapon + 1}]`;
+    const wpnUpg = activeWpn.upgrades && Object.keys(activeWpn.upgrades).length > 0 ? " +" : "";
+    statsMetaEl.textContent = `Map: ${activeMapConfig.name} | ${activeWpn.name}${wpnUpg} ${wpnNum} | ${ammoLabel} | Kills: ${player.kills} | Zombies: ${zombies.length} | Team: ${teammates.length + 1}`;
+    if (extraMetaEl) {
+      const throwStr = `🔥${molotovCount} 💥${grenadeCount} ⛏${landMineCount} 🗡${spikeTrapCount}`;
+      const downedInfo = teammates.filter(m => m.downed).map((m, i) => `⚠DOWN ${Math.ceil(m.downedTimer)}s`).join(" ");
+      extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}${downedInfo ? ` | ${downedInfo}` : ""}`;
+    }
+    if (skillMetaEl) {
+      const activeSkills = Object.values(skills)
+        .filter((s) => s.level > 0)
+        .map((s) => `${s.name} ${s.level}`)
+        .join(", ");
+      const xpTarget = 120 + skillPoints * 40;
+      const globalLvl = getLevel(playerProgression);
+      const globalXp = playerProgression.xp || 0;
+      const globalNext = getXPForCurrentLevel(playerProgression) || 0;
+      const globalStr = globalNext > 0 ? `Lvl ${globalLvl} [${globalXp}/${globalNext}]` : `Lvl ${globalLvl} (MAX)`;
+      skillMetaEl.textContent = `${globalStr} | SP:${skillPoints} XP:${Math.floor(skillXp)}/${xpTarget} | Shift+1..5${activeSkills ? ` | ${activeSkills}` : ""}`;
+    }
+    const elapsed = Math.floor(gameTime);
+    const mm = `${Math.floor(elapsed / 60)}`.padStart(2, "0");
+    const ss = `${elapsed % 60}`.padStart(2, "0");
+    worldStatsEl.textContent = `Wave ${wave} | ${mm}:${ss}`;
+    hudStatsRefreshTimer = 0.12;
+  }
   // Low ammo warning: flash when mag is nearly empty
   const magPct = player.ammo / (activeWpn.magSize || 1);
   lowAmmoWarning = magPct <= 0.25 && player.ammo > 0;
@@ -5328,27 +5492,6 @@ function updateHud(dt) {
   } else {
     statsMetaEl.style.color = "";
   }
-  if (extraMetaEl) {
-    const throwStr = `🔥${molotovCount} 💥${grenadeCount} ⛏${landMineCount} 🗡${spikeTrapCount}`;
-    const downedInfo = teammates.filter(m => m.downed).map((m, i) => `⚠DOWN ${Math.ceil(m.downedTimer)}s`).join(" ");
-    extraMetaEl.textContent = `${throwStr} | 📢 ${noiseMakerCount} | Score: ${score}${isCrouching ? " | [CROUCH]" : ""}${isADS ? " | [ADS]" : ""}${meleeCooldown > 0 ? " | [KNIFE CD]" : ""}${downedInfo ? ` | ${downedInfo}` : ""}`;
-  }
-  if (skillMetaEl) {
-    const activeSkills = Object.values(skills)
-      .filter((s) => s.level > 0)
-      .map((s) => `${s.name} ${s.level}`)
-      .join(", ");
-    const xpTarget = 120 + skillPoints * 40;
-    const globalLvl = getLevel(playerProgression);
-    const globalXp = playerProgression.xp || 0;
-    const globalNext = getXPForCurrentLevel(playerProgression) || 0;
-    const globalStr = globalNext > 0 ? `Lvl ${globalLvl} [${globalXp}/${globalNext}]` : `Lvl ${globalLvl} (MAX)`;
-    skillMetaEl.textContent = `${globalStr} | SP:${skillPoints} XP:${Math.floor(skillXp)}/${xpTarget} | Shift+1..5${activeSkills ? ` | ${activeSkills}` : ""}`;
-  }
-  const elapsed = Math.floor(gameTime);
-  const mm = `${Math.floor(elapsed / 60)}`.padStart(2, "0");
-  const ss = `${elapsed % 60}`.padStart(2, "0");
-  worldStatsEl.textContent = `Wave ${wave} | ${mm}:${ss}`;
   minimapRefreshTimer -= dt;
   if (minimapRefreshTimer <= 0) {
     drawMinimap();
@@ -5676,6 +5819,13 @@ function drawEnemyHealthBars() {
       }
     }
   }
+}
+
+function maybeDrawEnemyHealthBars(dt) {
+  enemyHealthBarsRefreshTimer -= dt;
+  if (enemyHealthBarsRefreshTimer > 0) return;
+  drawEnemyHealthBars();
+  enemyHealthBarsRefreshTimer = adaptiveQuality.level >= 1 ? 0.12 : 0.06;
 }
 
 // ─── Floating Damage Numbers ──────────────────────────────────────────────────
@@ -7654,12 +7804,18 @@ function animate(nowMs) {
   const now = nowMs * 0.001;
   const frameDt = Math.min(0.05, now - (animate.lastTime || now));
   animate.lastTime = now;
+  updateAdaptiveQuality(frameDt);
   const freezeFrame = hitStopTimer > 0;
   if (hitStopCooldown > 0) hitStopCooldown = Math.max(0, hitStopCooldown - frameDt);
   if (hitStopTimer > 0) hitStopTimer = Math.max(0, hitStopTimer - frameDt);
   const dt = freezeFrame ? 0 : frameDt;
 
   if (dt > 0 && gameState === "PLAYING" && !gameOver && !upgradeBenchOpen && !inventoryOpen) {
+    visibleVisionBlockersRefreshTimer -= dt;
+    if (visibleVisionBlockersRefreshTimer <= 0) {
+      refreshVisibleVisionBlockers();
+      visibleVisionBlockersRefreshTimer = adaptiveQuality.level >= 1 ? 0.12 : 0.08;
+    }
 
     gameTime += dt;
     spawnTimer -= dt;
@@ -7848,7 +8004,7 @@ function animate(nowMs) {
   updateFloatingDamageNums(dt);
   updateVehicleHud();
   renderer.render(scene, camera);
-  drawEnemyHealthBars();
+  maybeDrawEnemyHealthBars(frameDt);
   requestAnimationFrame(animate);
 }
 
@@ -8041,7 +8197,7 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  applyAdaptiveQuality();
 });
 
 (async function bootstrap() {
