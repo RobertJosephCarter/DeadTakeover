@@ -694,6 +694,9 @@ async function loadCityBuildingLibrary() {
 const chunkSize = 60;
 const chunkRadius = 4;
 const chunkGeometry = new THREE.PlaneGeometry(chunkSize, chunkSize, 48, 48);
+const CHUNK_STREAM_BUDGET = 2;
+const CHUNK_PREWARM_BUDGET = 24;
+const MAX_VALID_WORLD_ABS = chunkSize * (chunkRadius + 1) * 8;
 
 const player = {
   position: new THREE.Vector3(0, 1.8, 0),
@@ -1197,12 +1200,15 @@ function loadRun() {
     if (Array.isArray(save.playerPosition) && save.playerPosition.length >= 3) {
       const [x, y, z] = save.playerPosition;
       if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-        player.position.set(x, y, z);
+        const clampedX = THREE.MathUtils.clamp(x, -MAX_VALID_WORLD_ABS, MAX_VALID_WORLD_ABS);
+        const clampedZ = THREE.MathUtils.clamp(z, -MAX_VALID_WORLD_ABS, MAX_VALID_WORLD_ABS);
+        const safeY = Number.isFinite(y) ? y : terrainHeight(clampedX, clampedZ) + getPlayerEyeHeight();
+        player.position.set(clampedX, safeY, clampedZ);
         clampPlayerToTerrainFloor();
         markSpawnPositionAllowed();
         lastStreamChunkX = Number.NaN;
         lastStreamChunkZ = Number.NaN;
-        ensureChunks();
+        ensureChunks(CHUNK_PREWARM_BUDGET);
       }
     }
     player.yaw = Number.isFinite(save.playerYaw) ? save.playerYaw : player.yaw;
@@ -1447,23 +1453,43 @@ function applyActiveMapVisuals() {
   }
 
   if (activeMapConfig.useCityGroundTexture) {
-    // Outbreak City — real PBR asphalt (Polyhaven CC0).
-    groundMaterial.map = asphaltPbr.map;
-    groundMaterial.normalMap = asphaltPbr.normalMap;
-    groundMaterial.roughnessMap = asphaltPbr.roughnessMap;
-    groundMaterial.normalScale = new THREE.Vector2(0.6, 0.6);
-    groundMaterial.roughness = 1.0;
-    groundMaterial.metalness = 0.0;
-    groundMaterial.color.setHex(0x9b9ea4);
+    // Outbreak City — prefer PBR asphalt, fallback to procedural asphalt.
+    if (isTextureReady(asphaltPbr.map)) {
+      groundMaterial.map = asphaltPbr.map;
+      groundMaterial.normalMap = asphaltPbr.normalMap;
+      groundMaterial.roughnessMap = asphaltPbr.roughnessMap;
+      groundMaterial.normalScale = new THREE.Vector2(0.6, 0.6);
+      groundMaterial.roughness = 1.0;
+      groundMaterial.metalness = 0.0;
+      groundMaterial.color.setHex(0x9b9ea4);
+    } else {
+      cityStreetDiffuse = createCityStreetGroundTexture();
+      groundMaterial.map = cityStreetDiffuse;
+      groundMaterial.normalMap = null;
+      groundMaterial.roughnessMap = null;
+      groundMaterial.roughness = 0.98;
+      groundMaterial.metalness = 0.02;
+      groundMaterial.color.setHex(0x8f9399);
+    }
   } else if (activeMapConfig.id === "badlands") {
-    // Badlands — PBR dirt/mud.
-    groundMaterial.map = dirtPbr.map;
-    groundMaterial.normalMap = dirtPbr.normalMap;
-    groundMaterial.roughnessMap = dirtPbr.roughnessMap;
-    groundMaterial.normalScale = new THREE.Vector2(0.8, 0.8);
-    groundMaterial.roughness = 1.0;
-    groundMaterial.metalness = 0.0;
-    groundMaterial.color.setHex(activeMapConfig.groundTint);
+    // Badlands — prefer PBR dirt/mud, fallback to procedural texture.
+    if (isTextureReady(dirtPbr.map)) {
+      groundMaterial.map = dirtPbr.map;
+      groundMaterial.normalMap = dirtPbr.normalMap;
+      groundMaterial.roughnessMap = dirtPbr.roughnessMap;
+      groundMaterial.normalScale = new THREE.Vector2(0.8, 0.8);
+      groundMaterial.roughness = 1.0;
+      groundMaterial.metalness = 0.0;
+      groundMaterial.color.setHex(activeMapConfig.groundTint);
+    } else {
+      groundDiffuse = createGroundTextureForMap(activeMapConfig, grassGroundDiffuse);
+      groundMaterial.map = groundDiffuse;
+      groundMaterial.normalMap = null;
+      groundMaterial.roughnessMap = null;
+      groundMaterial.roughness = 0.95;
+      groundMaterial.metalness = 0;
+      groundMaterial.color.setHex(activeMapConfig.groundTint);
+    }
   } else {
     // Other maps still use the procedural canvas texture (grass / frost / etc).
     groundDiffuse = createGroundTextureForMap(
@@ -2202,6 +2228,19 @@ function preventUnexpectedSpawnTeleport() {
 
 function terrainNormal(x, z) { return terrainNormalFn(x, z, activeMapConfig); }
 
+function isTextureReady(tex) {
+  return !!(tex && tex.image && tex.image.complete && tex.image.width > 0);
+}
+
+function hasMissingChunksAround(pcx, pcz) {
+  for (let x = pcx - chunkRadius; x <= pcx + chunkRadius; x += 1) {
+    for (let z = pcz - chunkRadius; z <= pcz + chunkRadius; z += 1) {
+      if (!groundChunkMap.has(`${x},${z}`)) return true;
+    }
+  }
+  return false;
+}
+
 function makeTree(x, z) {
   const group = new THREE.Group();
   const y = terrainHeight(x, z);
@@ -2459,20 +2498,25 @@ function spawnPropAt(id, x, z, yaw) {
   }).catch(() => { /* swallow — file may be missing while user is iterating */ });
 }
 
-function ensureChunks() {
+function ensureChunks(maxCreates = CHUNK_STREAM_BUDGET) {
   const pcx = Math.floor(player.position.x / chunkSize);
   const pcz = Math.floor(player.position.z / chunkSize);
   let created = 0;
-  for (let x = pcx - chunkRadius; x <= pcx + chunkRadius; x += 1) {
-    for (let z = pcz - chunkRadius; z <= pcz + chunkRadius; z += 1) {
-      const key = `${x},${z}`;
-      if (!groundChunkMap.has(key)) {
-        makeChunk(x, z);
-        created += 1;
-        if (created >= 2) break;
+
+  // Build chunks center-out so terrain under/near the player appears first.
+  for (let r = 0; r <= chunkRadius && created < maxCreates; r += 1) {
+    for (let dx = -r; dx <= r && created < maxCreates; dx += 1) {
+      for (let dz = -r; dz <= r && created < maxCreates; dz += 1) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+        const x = pcx + dx;
+        const z = pcz + dz;
+        const key = `${x},${z}`;
+        if (!groundChunkMap.has(key)) {
+          makeChunk(x, z);
+          created += 1;
+        }
       }
     }
-    if (created >= 2) break;
   }
   // Unload chunks that moved out of range
   for (let i = groundChunks.length - 1; i >= 0; i -= 1) {
@@ -2872,7 +2916,7 @@ function resetWorldForNewMap() {
 
   applyActiveMapVisuals();
   applyAdaptiveQuality();
-  ensureChunks();
+  ensureChunks(CHUNK_PREWARM_BUDGET);
   initWeather();
   updateDayNight();
   for (let i = 0; i < 8; i += 1) spawnZombieNearPlayer();
@@ -7945,8 +7989,9 @@ function animate(nowMs) {
     preventUnexpectedSpawnTeleport();
     const streamChunkX = Math.floor(player.position.x / chunkSize);
     const streamChunkZ = Math.floor(player.position.z / chunkSize);
-    if (streamChunkX !== lastStreamChunkX || streamChunkZ !== lastStreamChunkZ) {
-      ensureChunks();
+    const chunkMoved = streamChunkX !== lastStreamChunkX || streamChunkZ !== lastStreamChunkZ;
+    if (chunkMoved || hasMissingChunksAround(streamChunkX, streamChunkZ)) {
+      ensureChunks(chunkMoved ? CHUNK_STREAM_BUDGET : 1);
       lastStreamChunkX = streamChunkX;
       lastStreamChunkZ = streamChunkZ;
     }
